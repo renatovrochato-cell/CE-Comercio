@@ -1315,7 +1315,30 @@ function _novoEquip(nome,pot,sb,gas){
     gas:(gas||0), potPorDefeito:(pot!=null&&!gas)};
 }
 
+/* Apagar uma divisão tira-a de D.divisoes mas deixa tudo o resto para trás:
+   os vãos medidos, as fotos, a iluminação, os equipamentos. Esses dados
+   continuavam a contar nas condições das perguntas e a viajar no export. */
+/* "Sem sistema" tem de apagar o que sobrou de uma resposta anterior ou da
+   leitura de uma etiqueta. Uma marca e um modelo agarrados a um sistema que
+   não existe entram no certificado como se existissem. */
+function limparCamposAQS(){
+  ['aqsMarca','aqsModelo','aqsPotencia','aqsCapacidade','aqsRendimento',
+   'aqsAnoFabrico','aqsIdadeEquip','aqsManutencao','aqsCaudal','aqsTextoBase',
+   'aqsTextoBaseId','aqsPotenciaOrigem','aqsCOP','aqsEficiencia','aqsFonteEnergia',
+   'solar','solarMarca','solarModelo','solarColetores','solarArea','solarDeposito'
+  ].forEach(k=>{ if(k in D) D[k]=''; });
+  D.aqsFatorIdade=null; D.aqsMarcas=[];
+}
+function purgarDivisoesApagadas(){
+  const vivas=new Set(D.divisoes||[]);
+  ['divisoesDados','espacosDados','ilumDados','equipDados','ilumTotais',
+   'equipTotais','ilumRef','equipRef','equipExiste','climaDivisoes'].forEach(k=>{
+    const o=D[k]; if(!o||typeof o!=='object') return;
+    Object.keys(o).forEach(d=>{ if(!vivas.has(d)) delete o[d]; });
+  });
+}
 function buildQs(){
+  try{ purgarDivisoesApagadas(); }catch(e){}
   const qs=[];
 
   // DOCUMENTOS — primeiro passo do levantamento.
@@ -1583,10 +1606,16 @@ function buildQs(){
     hint:'Introduz os 3 valores: espessura vidro exterior, caixa de ar, espessura vidro interior.',
     isVidrosInline:true,key:'espVidros',
     cond:()=>{
-      // só aparece se pelo menos um VE em qualquer divisão for Duplo
-      return Object.values(D.divisoesDados||{}).some(dd=>
-        (dd.vaos||[]).some(ve=>ve.tipo&&ve.tipo.toLowerCase().includes('duplo'))
-      );
+      // só as divisões que ainda existem — e a fachada cortina conta pelo
+      // vidro do pano, não pelo nome do tipo
+      return (D.divisoes||[]).some(d=>{
+        const dd=(D.divisoesDados||{})[d]||{};
+        return (dd.vaos||[]).some(ve=>{
+          const t=String(ve.tipo||'').toLowerCase();
+          const p=String(ve.vidroPano||'').toLowerCase();
+          return t.includes('duplo')||p.includes('duplo')||p.includes('triplo');
+        });
+      });
     }});
 
   // UNIDADES EXTERIORES (AC / solar) — só quando existem
@@ -5880,7 +5909,12 @@ function saveToD(key,raw){
   else if(key==='enuVaosYN'){D.enuVaosYN=v;}
   else if(key==='enuVaosDim'){D.enuVaosDim=v;}
   // climatização global removida — ver dc-{div}-clima
-  else if(key==='aqsTipo'){setAqsTipo(v);}
+  else if(key==='aqsTipo'){
+    setAqsTipo(v);
+    // "Sem sistema" não pode ficar com a marca e o modelo de uma resposta
+    // anterior ou de uma etiqueta lida — iam para o certificado como reais
+    if(v==='Sem sistema') limparCamposAQS();
+  }
   else if(key==='aqsMarcas'){D.aqsMarcas=arr;}
   else if(key==='aqsMarca'){D.aqsMarca=v;}
   else if(key==='solar'){D.solar=v;}

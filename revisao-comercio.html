@@ -1955,29 +1955,12 @@ function pintar(){
     const par=parecidos(3);
     if(par.lista.length&&par.lista[0].pct>=45){
       const p0=par.lista[0];
-      h+='<section><h2>Comparação com os certificados anteriores</h2>'+
-        '<table><thead><tr><th style="width:190px">Campo</th>'+
-        '<th style="width:230px">Este levantamento</th>'+
-        '<th style="width:230px">CE nº '+esc(p0.c.n)+' ('+esc(p0.c.cidade)+') — '+
-          p0.pct+'%</th><th></th></tr></thead><tbody>';
-      Object.keys(PESO_MATCH).forEach(k=>{
-        const aqui=par.perfil[k], la=p0.c[k];
-        if(!aqui&&!la) return;
-        const bate=_norm(aqui)&&_norm(la)&&
-          (_norm(aqui)===_norm(la)||_norm(aqui).includes(_norm(la))||_norm(la).includes(_norm(aqui)));
-        h+='<tr><td class="rot">'+esc(ROT_CAMPO[k]||k)+'</td>'+
-          '<td class="rot" style="color:var(--tx)">'+esc(aqui||'—')+'</td>'+
-          '<td class="rot">'+esc(la||'—')+'</td>'+
-          '<td class="rot" style="color:'+(bate?'var(--ac)':'var(--am)')+'">'+
-          (bate?'igual':(aqui&&la?'difere':'sem comparação'))+'</td></tr>';
-      });
-      h+='</tbody></table>'+
-        '<div class="novo" style="color:var(--tx3);font-size:12.5px">'+
-        'Também parecidos: '+par.lista.slice(1)
-          .map(x=>'nº '+esc(x.c.n)+' ('+x.pct+'%)').join(' · ')+
-        '  —  as diferenças podem ser legítimas; servem para dar por falta do que '+
-        'se esqueceu.</div></section>';
-    }
+      /* A COMPARAÇÃO COM CERTIFICADOS ANTERIORES SAIU.
+     A listagem de referência é de habitação: apartamentos e moradias, com
+     tipologias, pisos e AQS domésticos. Comparar uma loja ou um restaurante
+     com ela não diz nada — e um "95% parecido" com um apartamento de Lagos
+     num processo de comércio é pior do que não mostrar nada. */
+      }
   }catch(e){}
 
   /* ── 2 · COMPARAR COM O CE MAIS PARECIDO ── */
