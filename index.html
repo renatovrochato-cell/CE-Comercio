@@ -234,10 +234,12 @@ body.com-planta #visDivisoria.a-arrastar::after{color:#04140c}
     </div>
     <div style="width:100%;display:flex;flex-direction:column;gap:9px">
       <div style="font-size:12px;color:var(--tx2)">Nome do projeto</div>
-      <input class="inp" id="start-nome" placeholder="Ex: Moradia Silva – Portimão">
+      <input class="inp" id="start-nome" placeholder="Ex: Loja Silva – Portimão">
       <input class="inp" id="start-morada" placeholder="Morada (opcional)">
     </div>
     <button class="btn-next" onclick="iniciar()" style="width:100%">🎙️ Começar</button>
+    <button class="btn-next" style="width:100%;background:var(--bg3);color:var(--tx2)" onclick="definirChaveAPI()">🔑 Chave da API — leitura de cadernetas e etiquetas</button>
+    <div id="estado-chave" style="font-size:11px;text-align:center;margin-top:-4px;color:var(--tx3)"></div>
     <div id="perfil-row" style="width:100%;display:none;flex-wrap:wrap;gap:6px;align-items:center">
       <div style="font-size:11px;color:var(--tx2);width:100%">🏢 Aplicar perfil de edifício:</div>
       <div id="perfil-chips" style="display:flex;flex-wrap:wrap;gap:6px"></div>
@@ -564,7 +566,55 @@ const DIVS_BASE=[
 // VERSÃO — fonte única (selo no ecrã inicial + cabeçalho do TXT exportado).
 // Subir aqui a cada alteração ao ficheiro.
 // ═══════════════════════════════════════
-const APP_VERSION='COM-v2026.09.03-r1';
+const APP_VERSION='COM-v2026.09.04-r2';
+
+/* ═══ CHAVE DA API ANTHROPIC — guardada no dispositivo ═══ */
+const CHAVE_API_STORAGE='com_api_key';
+function obterChaveAPI(){
+  try{ if(window.__COM_API_KEY) return window.__COM_API_KEY; }catch(e){}
+  try{ return localStorage.getItem(CHAVE_API_STORAGE)||''; }catch(e){ return ''; }
+}
+function definirChaveAPI(){
+  const atual=obterChaveAPI();
+  const v=prompt('Chave da API Anthropic (sk-ant-…).\n\nFica guardada só neste dispositivo. '+
+    'Serve para ler cadernetas, etiquetas e chapas de equipamento.\n\nDeixar vazio para apagar.',
+    atual?atual.slice(0,12)+'…':'');
+  if(v===null) return;
+  const chave=String(v).trim();
+  try{
+    if(!chave||/…$/.test(chave)){ if(!chave) localStorage.removeItem(CHAVE_API_STORAGE); }
+    else localStorage.setItem(CHAVE_API_STORAGE,chave);
+  }catch(e){ alert('Não consegui guardar a chave neste browser.'); return; }
+  atualizarEstadoChave();
+}
+function atualizarEstadoChave(){
+  const el=document.getElementById('estado-chave'); if(!el) return;
+  el.textContent=obterChaveAPI()?'🔑 chave guardada':'🔑 sem chave — leitura de documentos desligada';
+  el.style.color=obterChaveAPI()?'var(--acd)':'var(--red)';
+}
+/* Intercepta o fetch: qualquer pedido à API leva a chave e os cabeçalhos que
+   o browser exige. Sem chave, falha com uma mensagem que diz o que fazer, em
+   vez de um 401 mudo. */
+(function(){
+  /* Sem fetch (browsers muito antigos, ambientes de teste) não há nada a
+     interceptar — e rebentar aqui deitava abaixo o script inteiro no arranque. */
+  if(typeof window.fetch!=='function') return;
+  const _f=window.fetch.bind(window);
+  window.fetch=function(url,opts){
+    try{
+      if(typeof url==='string'&&url.indexOf('api.anthropic.com')>-1){
+        const k=obterChaveAPI();
+        if(!k) return Promise.reject(new Error('Sem chave da API. Na capa, toca em "Chave da API" e cola a tua chave sk-ant-….'));
+        opts=Object.assign({},opts||{});
+        opts.headers=Object.assign({},opts.headers||{},{
+          'x-api-key':k,'anthropic-version':'2023-06-01',
+          'anthropic-dangerous-direct-browser-access':'true'});
+      }
+    }catch(e){}
+    return _f(url,opts);
+  };
+})();
+document.addEventListener('DOMContentLoaded',atualizarEstadoChave);
 
 /* ══════════════════════════════════════════════════════════════════
    A APP INSTALADA FICAVA PRESA NUMA VERSÃO ANTIGA
@@ -1065,10 +1115,17 @@ function renderEspacoInline(div){
   const at=(ATIVIDADES_METAB||[]).find(x=>x[0]===e.atividade);
   if(at) card.appendChild(_cNota('Caudal por ocupante '+at[1]+' m³/(h·pessoa) · taxa de metabolismo '+at[2]+' met.'));
   card.appendChild(_cSelect('Carga poluente do edifício',e.poluente,CARGA_POLUENTE,v=>{e.poluente=v;saveEspaco(div);}));
-  card.appendChild(_cChips('Iluminância [lux]',e.iluminancia,['100','150','200','300','500','750','1000'],
-    v=>{e.iluminancia=v;saveEspaco(div);renderEspacoInline(div);}));
-  card.appendChild(_cInput('Ou outro valor [lux]',e.iluminancia,'medição in situ',v=>{e.iluminancia=v;saveEspaco(div);},'number'));
-  card.appendChild(_cNota('Medição in situ ou EN 12464-1 / projeto luminotécnico. Não é um valor a estimar de cabeça: o requisito máximo do FCC calcula-se sobre ele.'));
+  /* A iluminância só serve para o requisito de DPI. Sem iluminação instalada
+     não há DPI a verificar — o FCC usa a potência de referência — e perguntar
+     os lux de um espaço às escuras é pedir um número que não existe. */
+  if(D.temIluminacao==='Não'){
+    card.appendChild(_cNota('Iluminância não se aplica: respondeste que não há iluminação instalada. O FCC usa a potência de referência e não há requisito de DPI a verificar.'));
+  } else {
+    card.appendChild(_cChips('Iluminância [lux]',e.iluminancia,['100','150','200','300','500','750','1000'],
+      v=>{e.iluminancia=v;saveEspaco(div);renderEspacoInline(div);}));
+    card.appendChild(_cInput('Ou outro valor [lux]',e.iluminancia,'medição in situ',v=>{e.iluminancia=v;saveEspaco(div);},'number'));
+    card.appendChild(_cNota('Medição in situ ou EN 12464-1 / projeto luminotécnico. Não é um valor a estimar de cabeça: o requisito máximo do FCC calcula-se sobre ele.'));
+  }
   card.appendChild(_cChips('Dispõe de água quente sanitária / piscina?',e.aqs,['Sim','Não'],v=>{e.aqs=v;saveEspaco(div);}));
   w.appendChild(card);
   w.style.display='block';
@@ -1089,7 +1146,8 @@ function resumoEspacoParaResposta(div){
   if(q.isEspacoInline){
     const a=areaDoEspaco(div);
     txt=[e.tab25||'',a>0?a.toFixed(2).replace('.',',')+' m²':'',
-      e.ocupantes?e.ocupantes+' ocup.':'',e.iluminancia?e.iluminancia+' lux':'']
+      e.ocupantes?e.ocupantes+' ocup.':'',
+      (D.temIluminacao!=='Não'&&e.iluminancia)?e.iluminancia+' lux':'']
       .filter(Boolean).join(' · ');
   } else if(q.isIlumInline){
     if((D.ilumRef||{})[div]==='Sim') txt='potência de referência';
@@ -1329,6 +1387,31 @@ function limparCamposAQS(){
   ].forEach(k=>{ if(k in D) D[k]=''; });
   D.aqsFatorIdade=null; D.aqsMarcas=[];
 }
+/* Aplica a resposta geral a todos os espaços. Com "Não" marca a referência e
+   limpa o que porventura já lá estivesse; com "Sim" só desmarca a referência
+   nos espaços que ainda não foram levantados, para não apagar trabalho feito. */
+function aplicarRespostaGlobal(qual,v){
+  const divs=D.divisoes||[];
+  if(qual==='ilum'){
+    if(!D.ilumRef) D.ilumRef={};
+    if(!D.ilumDados) D.ilumDados={};
+    if(!D.ilumTotais) D.ilumTotais={};
+    divs.forEach(d=>{
+      if(v==='Não'){ D.ilumRef[d]='Sim'; D.ilumDados[d]=[]; D.ilumTotais[d]=0; }
+      else if(!((D.ilumDados[d]||[]).length)) D.ilumRef[d]='Não';
+    });
+  } else {
+    if(!D.equipRef) D.equipRef={};
+    if(!D.equipExiste) D.equipExiste={};
+    if(!D.equipDados) D.equipDados={};
+    if(!D.equipTotais) D.equipTotais={};
+    divs.forEach(d=>{
+      if(v==='Não'){ D.equipRef[d]='Sim'; D.equipExiste[d]='Não';
+        D.equipDados[d]=[]; D.equipTotais[d]={util:0,standby:0}; }
+      else if(!((D.equipDados[d]||[]).length)){ D.equipRef[d]='Não'; D.equipExiste[d]='Sim'; }
+    });
+  }
+}
 function purgarDivisoesApagadas(){
   const vivas=new Set(D.divisoes||[]);
   ['divisoesDados','espacosDados','ilumDados','equipDados','ilumTotais',
@@ -1339,6 +1422,13 @@ function purgarDivisoesApagadas(){
 }
 function buildQs(){
   try{ purgarDivisoesApagadas(); }catch(e){}
+  /* As divisões podem ser acrescentadas DEPOIS da resposta geral. Sem isto,
+     uma divisão nova nascia sem a marca de referência e voltava a aparecer
+     como se faltasse levantá-la. */
+  try{
+    if(D.temIluminacao) aplicarRespostaGlobal('ilum',D.temIluminacao);
+    if(D.temEquipamentos) aplicarRespostaGlobal('equip',D.temEquipamentos);
+  }catch(e){}
   const qs=[];
 
   // DOCUMENTOS — primeiro passo do levantamento.
@@ -1444,6 +1534,20 @@ function buildQs(){
       'cozinha','copa','bar','refeitório','vestiário','balneário','hall','corredor','escada',
       'armazém','arrumos','arrecadação','despensa','arquivo','zona técnica','estacionamento interior'],
     key:'divisoes'});
+
+  /* Numa loja pequena não vale a pena perguntar espaço a espaço se há
+     iluminação e equipamentos — ou há em todo o lado, ou não há em lado
+     nenhum. Estas duas perguntas resolvem o caso comum de uma vez: com
+     "Não", as perguntas por compartimento desaparecem e o FCC fica com a
+     potência e a densidade de referência. */
+  qs.push({id:'tem-iluminacao',ctx:'Iluminação',
+    text:'Há iluminação instalada?',
+    hint:'Não — nenhum espaço tem luminárias; o FCC usa a potência de iluminação de referência e a pergunta não volta a aparecer. Sim — levanta-se compartimento a compartimento.',
+    chips:['Sim','Não'],key:'temIluminacao'});
+  qs.push({id:'tem-equipamentos',ctx:'Equipamentos',
+    text:'Há equipamentos instalados?',
+    hint:'Não — nenhum espaço tem equipamentos; o FCC usa a densidade de potência de referência e a pergunta não volta a aparecer. Sim — levanta-se compartimento a compartimento.',
+    chips:['Sim','Não'],key:'temEquipamentos'});
 
   /* ORDEM DAS DIVISÕES — em qualquer edifício.
      Estava limitada a Moradia, com o argumento de que num apartamento o
@@ -1747,7 +1851,10 @@ function comRespostasPreservadas(alterarLista){
 
 function expandDivCompleto(){
   const divs=D.divisoes.length?D.divisoes:['Sala'];
-  const chaveAtual=JSON.stringify(divs);
+  /* A chave tinha só as divisões. Mudar a resposta geral de "Não" para "Sim"
+     não a alterava, e as perguntas por compartimento não chegavam a aparecer
+     até se mexer nas divisões. As duas respostas entram na chave. */
+  const chaveAtual=JSON.stringify([divs,D.temIluminacao||'',D.temEquipamentos||'']);
   if(_ultimaExpansaoDivisoesKey===chaveAtual){expandedDivMedidas=true;return;} // já está atualizado
   const extras=[];
   /* PÉ-DIREITO NO FIM DE CADA PISO
@@ -1803,8 +1910,8 @@ function expandDivCompleto(){
       key:`dc-${div}-vaos`
     });
     // AQS passou a ser pergunta global (em comércio pode não haver cozinha).
-    // 3. Iluminação do espaço — luminárias, lâmpadas, balastro e controlo
-    extras.push({
+    // 3. Iluminação do espaço — só se a pergunta geral disse que há
+    if(D.temIluminacao!=='Não') extras.push({
       id:`dc-${div}-ilum`,
       ctx:`${div} — Iluminação`,
       text:`Iluminação da ${div}?`,
@@ -1829,8 +1936,8 @@ function expandDivCompleto(){
       div:div,
       key:`dc-${div}-clima`
     });
-    // 5. Equipamentos do espaço — a lista sugerida vem da tipologia escolhida
-    extras.push({
+    // 5. Equipamentos do espaço — só se a pergunta geral disse que há
+    if(D.temEquipamentos!=='Não') extras.push({
       id:`dc-${div}-equip`,
       ctx:`${div} — Equipamentos`,
       text:`Que equipamentos existem na ${div}?`,
@@ -5939,6 +6046,16 @@ function saveToD(key,raw){
   else if(key==='nPisosEdificio'){D.nPisosEdificio=v.replace('+','');}
   else if(key==='pisoLocal'){D.pisoLocal=v;}
   else if(key==='levParedes'){D.levParedes=v;}
+  else if(key==='temIluminacao'){
+    D.temIluminacao=v;
+    // "Não" tem de deixar o FCC marcado com a potência de referência em todos
+    // os espaços — senão o TXT sai sem iluminação nenhuma e sem dizer porquê
+    aplicarRespostaGlobal('ilum',v);
+  }
+  else if(key==='temEquipamentos'){
+    D.temEquipamentos=v;
+    aplicarRespostaGlobal('equip',v);
+  }
   else if(key==='ventTipo'){D.ventTipo=v;}
   else if(key==='ventObstaculos'){
     D.ventObstaculos=v;
@@ -7137,7 +7254,8 @@ function modoRevisao(){
       grelha.appendChild(sel('Tipo de espaço — Tabela 25',e.tab25,
         TAB25_ESPACOS.map(x=>x[0]),v=>{e.tab25=v;}));
       grelha.appendChild(campo('Nº de ocupantes',e.ocupantes,v=>{e.ocupantes=v;},'number'));
-      grelha.appendChild(campo('Iluminância [lux]',e.iluminancia,v=>{e.iluminancia=v;},'number'));
+      if(D.temIluminacao!=='Não')
+        grelha.appendChild(campo('Iluminância [lux]',e.iluminancia,v=>{e.iluminancia=v;},'number'));
       grelha.appendChild(campo('Área útil [m²]',
         areaDoEspaco(div)>0?areaDoEspaco(div).toFixed(2):'',
         v=>{e.area=v;},'number'));
@@ -7150,7 +7268,8 @@ function modoRevisao(){
       const pw=_n((D.ilumTotais||{})[div]);
       const a=areaDoEspaco(div), lux=_n(e.iluminancia);
       let lTxt;
-      if(((D.ilumRef||{})[div])==='Sim') lTxt='<span style="color:var(--acd)">potência de referência (marcada)</span>';
+      if(D.temIluminacao==='Não') lTxt='<span style="color:var(--acd)">sem iluminação no edifício — potência de referência</span>';
+      else if(((D.ilumRef||{})[div])==='Sim') lTxt='<span style="color:var(--acd)">potência de referência (marcada)</span>';
       else if(!lums.length) lTxt='<span style="color:var(--acd)">sem luminárias levantadas — o TXT usa a potência de referência</span>';
       else{
         lTxt='<span style="color:var(--tx)">'+lums.length+' luminária'+(lums.length>1?'s':'')+
@@ -7161,7 +7280,8 @@ function modoRevisao(){
       const semPot=eqs.filter(x=>!_n(x.pot)&&!x.gas).length;
       const te=(D.equipTotais||{})[div]||{};
       let eTxt;
-      if(((D.equipExiste||{})[div])==='Não') eTxt='<span style="color:var(--acd)">sem equipamentos — densidade de referência</span>';
+      if(D.temEquipamentos==='Não') eTxt='<span style="color:var(--acd)">sem equipamentos no edifício — densidade de referência</span>';
+      else if(((D.equipExiste||{})[div])==='Não') eTxt='<span style="color:var(--acd)">sem equipamentos — densidade de referência</span>';
       else if(!eqs.length) eTxt='<span style="color:var(--red)">nenhum equipamento levantado</span>';
       else eTxt='<span style="color:var(--tx)">'+eqs.length+' equipamento'+(eqs.length>1?'s':'')+
         ' · '+(te.util||0)+' W'+(te.standby?' (+'+te.standby+' W standby)':'')+'</span>'+
@@ -7236,6 +7356,23 @@ function verificarLevantamento(){
   const E=(sec,msg)=>incoerencias.push({sec,msg});
   const A=(sec,msg)=>avisos.push({sec,msg});
 
+  /* AQS "Sem sistema" com etiqueta fotografada. No Gil Simões havia duas fotos
+     de um termoacumulador HTW de 80 L, lidas por OCR, e a resposta foi "Sem
+     sistema". Uma das duas está errada e não é a app que decide qual — mas
+     tem de o dizer, em vez de deixar o certificado sair com um equipamento
+     fotografado e declarado inexistente. */
+  try{
+    if(D.aqsTipo==='Sem sistema'){
+      const etq=(D.fotoEtiquetas||[]).filter(f=>f&&/aqs/i.test(String(f.div||f.tipo||''))&&f.dados&&(f.dados.marca||f.dados.capacidade_l));
+      if(etq.length){
+        const d0=etq[0].dados||{};
+        E('AQS','Respondeste "Sem sistema" mas há '+etq.length+' foto'+(etq.length>1?'s':'')+
+          ' de etiqueta de equipamento de AQS ('+[d0.marca,d0.modelo].filter(Boolean).join(' ')+
+          (d0.capacidade_l?', '+d0.capacidade_l+' L':'')+'). Ou o sistema existe, ou a foto é de outro lado.');
+      }
+    }
+  }catch(e){}
+
   /* COMÉRCIO E SERVIÇOS — o que o FCC recusa se vier vazio. Estes campos não
      existem na app de habitação, por isso nenhuma das verificações antigas os
      apanha: sem eles o transfer para a folha EdificioN pára a meio. */
@@ -7253,11 +7390,11 @@ function verificarLevantamento(){
       if(!e.tab25) L(nome,'Tipo de espaço da Tabela 25 por escolher (iluminância)');
       if(!e.tipoVenti) L(nome,'Tipo de espaço para o caudal de ar novo por escolher');
       if(util&&!_n(e.ocupantes)) L(nome,'Nº de ocupantes por preencher');
-      if(!_n(e.iluminancia)) L(nome,'Iluminância [lux] por preencher');
+      if(!_n(e.iluminancia)&&D.temIluminacao!=='Não') L(nome,'Iluminância [lux] por preencher');
       if(util&&areaDoEspaco(nome)<=0) L(nome,'Área útil de pavimento por medir');
       const usaRefI=((D.ilumRef||{})[nome]==='Sim');
       const lums=((D.ilumDados||{})[nome]||[]).filter(l=>l.lampada||l.pot||l.nLum);
-      if(util&&!usaRefI&&!lums.length)
+      if(util&&!usaRefI&&!lums.length&&D.temIluminacao!=='Não')
         A(nome,'Sem luminárias levantadas — o TXT usa a potência de referência por defeito. '+
           'Se houver iluminação instalada, levantá-la muda o resultado.');
       lums.forEach((l,i)=>{
@@ -7267,9 +7404,13 @@ function verificarLevantamento(){
       });
       const usaRefE=((D.equipRef||{})[nome]==='Sim');
       ((D.equipDados||{})[nome]||[]).forEach(eq=>{
-        if(!_n(eq.pot)) L(nome,'Equipamento "'+(eq.desc||'sem nome')+'": potência em falta (chapa de características)');
+        /* Equipamento a GÁS tem potência elétrica zero por definição — o que
+           tem é potência térmica em kW. Estava a ser assinalado como se lhe
+           faltasse a chapa. */
+        if(!_n(eq.pot)&&!_n(eq.gas))
+          L(nome,'Equipamento "'+(eq.desc||'sem nome')+'": potência em falta (chapa de características)');
       });
-      if(util&&!usaRefE&&!((D.equipDados||{})[nome]||[]).length)
+      if(util&&!usaRefE&&!((D.equipDados||{})[nome]||[]).length&&D.temEquipamentos!=='Não')
         A(nome,'Sem equipamentos levantados — confirmar se é mesmo assim ou marcar densidade de referência');
     });
     if(areaUteis>=1000)
@@ -9547,6 +9688,10 @@ function descPavInterior2025(op){
 }
 
 function buildTxt(){
+  /* Ficheiros já gravados com "Sem sistema" e a marca de um termoacumulador
+     agarrada (o caso do Gil Simões) não passam pelo saveToD — a limpeza tem de
+     acontecer também aqui, senão o TXT sai com um equipamento que não existe. */
+  try{ if(D.aqsTipo==='Sem sistema') limparCamposAQS(); }catch(e){}
   // cabeçalho com a versão do levantamento — ver registarExportacao()
   if(!Array.isArray(D.divisoes)) D.divisoes=[];
   if(!D.divisoesDados||typeof D.divisoesDados!=='object') D.divisoesDados={};
@@ -12263,6 +12408,14 @@ function buildTxt(){
 
     // ── Iluminância e DPI ──
     t+=sep('ILUMINÂNCIA E DPI (Tabela 25 da Portaria 138-I/2021)');
+    if(D.temIluminacao==='Não'){
+      t+='NÃO SE APLICA — o edifício não tem iluminação instalada.\n\n';
+      t+='Sem luminárias não há potência instalada, logo não há DPI a comparar com o\n';
+      t+='requisito máximo. O FCC usa a potência de iluminação de referência e a\n';
+      t+='coluna D (iluminância) fica por preencher.\n';
+      t+='O tipo de espaço da Tabela 25 continua a ser preciso para outros efeitos —\n';
+      t+='sai na lista dos espaços interiores úteis, acima.\n';
+    } else {
     t+='Colunas do FCC v1.04 (~C67:G71): D=Iluminância medida in situ / EN 12464-1 [lux] ·\n';
     t+='G=Tipo de Espaço da Tabela 25. As colunas F, I, J e K são fórmulas do template — não escrever.\n\n';
     divsC.forEach(nome=>{
@@ -12280,7 +12433,8 @@ function buildTxt(){
       const _semLum=!(((D.ilumDados||{})[nome]||[]).some(l=>l.lampada||l.pot||l.nLum));
       if((D.ilumRef||{})[nome]==='Sim'||_semLum){
         t+='  Potência de iluminação: potência de REFERÊNCIA'+
-           (_semLum&&(D.ilumRef||{})[nome]!=='Sim'?' (por defeito — sem luminárias levantadas)':'')+'\n';
+           (D.temIluminacao==='Não'?' (o edifício não tem iluminação instalada)'
+            :_semLum&&(D.ilumRef||{})[nome]!=='Sim'?' (por defeito — sem luminárias levantadas)':'')+'\n';
       } else {
         t+='  Potência de iluminação instalada: '+(pw>0?pw+' W':'⚠ EM FALTA')+'\n';
         if(pw>0&&a>0){
@@ -12292,6 +12446,7 @@ function buildTxt(){
     });
     t+='Nota: sem iluminação instalada nem prevista o passo pode fechar sem preenchimento, mas o consumo\n';
     t+='de iluminação nunca se considera nulo — usam-se os valores de referência por tipo de compartimento.\n';
+    }
 
     // ── Luminárias ──
     t+=sep('LEVANTAMENTO DAS LUMINÁRIAS');
@@ -12305,7 +12460,9 @@ function buildTxt(){
       const reais=arr.filter(l=>l.lampada||l.pot||l.nLum);
       if(usaRef||!reais.length){
         t+=`${nome}: potência de iluminação de REFERÊNCIA`+
-           (usaRef?' (marcado no levantamento)':' (por defeito — nenhuma luminária levantada)')+'\n\n';
+           (D.temIluminacao==='Não'?' (o edifício não tem iluminação instalada)'
+            :usaRef?' (marcado no levantamento)'
+            :' (por defeito — nenhuma luminária levantada)')+'\n\n';
         algumaLum=true; return;
       }
       algumaLum=true;
@@ -12451,7 +12608,9 @@ function buildTxt(){
     divsC.forEach(nome=>{
       if(((D.equipRef||{})[nome])==='Sim'){
         const _p=perfilDL79Dados();
-        t+=`${nome}: densidade de potência de REFERÊNCIA`+(_p&&_p.wm2!=null?' ('+_p.wm2+' W/m², perfil '+_p.nome+')':'')+'\n\n';
+        t+=`${nome}: densidade de potência de REFERÊNCIA`+
+           (_p&&_p.wm2!=null?' ('+_p.wm2+' W/m², perfil '+_p.nome+')':'')+
+           (D.temEquipamentos==='Não'?' — o edifício não tem equipamentos instalados':'')+'\n\n';
         algumEq=true;return;
       }
       const arr=(D.equipDados||{})[nome]||[];
