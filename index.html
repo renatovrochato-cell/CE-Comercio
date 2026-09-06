@@ -13388,6 +13388,10 @@ function gerarDescricaoSucinta(){
      directamente para o portal e ninguém repara em aspas angulares. */
   let climaFrase='O sistema de aquecimento e arrefecimento ambiente é composto por '+
     '___ (POR PREENCHER — nenhum sistema de climatização registado).';
+  /* Se a resposta geral foi "sem climatização", não há nada por preencher:
+     é uma afirmação, e vai assim para o portal. */
+  if(D.pesClima==='Não'&&!climDivs.length)
+    climaFrase='Não existem sistemas de climatização instalados (Pequeno Edifício de Serviços sem sistema(s) de climatização).';
   if(climDivs.length){
     const TIPOS_SEM_UE3=['pavimento radiante','lareira/recuperador','radiadores elétricos'];
     const temPavRad=climDivs.some(([,cd])=>(cd.tipos||[cd.tipo]).some(t=>(t||'').toLowerCase()==='pavimento radiante'));
