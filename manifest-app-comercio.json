@@ -2,6 +2,7 @@
   "id": "/APP-comercio/?app=app-comercio",
   "name": "APP Comércio — Levantamento RECS-PES",
   "short_name": "APP Comércio",
+  "description": "Levantamento de campo para certificados energéticos de pequenos edifícios de comércio e serviços (RECS-PES)",
   "start_url": "./index.html?app=app-comercio",
   "scope": "./",
   "display": "fullscreen",
