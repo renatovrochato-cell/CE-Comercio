@@ -1275,7 +1275,7 @@ const DIVS_BASE=[
 // VERSÃO — fonte única (selo no ecrã inicial + cabeçalho do TXT exportado).
 // Subir aqui a cada alteração ao ficheiro.
 // ═══════════════════════════════════════
-const APP_VERSION='v2026.10.08-FIX390';
+const APP_VERSION='v2026.10.11-FIX392';
 /* APP COMÉRCIO assente na CE Voz 3.89 (FIX389). O número FIX mantém o formato
    que a actualização automática lê; o sufixo visível identifica a app. */
 /* A VERSÃO QUE SE MOSTRA É 3.21 (FIX321).
@@ -1860,7 +1860,6 @@ function garantirEspaco(div){
     e=D.espacosDados[div]={util:'Útil',tipologia:D.tipologiaAdene||'',prefilled:true,auto:{}};
     _CAMPOS_AUTO_ESP.forEach(k=>{ e[k]=d[k]; e.auto[k]=true; });
     if(D.temIluminacao==='Não'){ e.iluminancia=''; delete e.auto.iluminancia; }
-    return e;
   }
   if(!e.auto||typeof e.auto!=='object') e.auto={};
   _CAMPOS_AUTO_ESP.forEach(k=>{
@@ -1871,6 +1870,13 @@ function garantirEspaco(div){
   });
   if(!e.tipologia) e.tipologia=D.tipologiaAdene||'';
   if(!e.util) e.util='Útil';
+  /* ocupantes pela densidade de referência do perfil DL79, quando há área e o
+     campo ainda está vazio ou automático (FIX391) */
+  try{
+    if(OCUP_ZERO_CAT.indexOf(d.cat)<0&&(String(e.ocupantes||'').trim()===''||e.auto.ocupantes)){
+      const o=ocupantesReferencia(div); if(o>0){ e.ocupantes=String(o); e.auto.ocupantes=true; }
+    }
+  }catch(err){}
   return e;
 }
 /* Quem escolhe à mão fica com a escolha. */
@@ -2742,20 +2748,23 @@ function buildQs(){
     isFacesInline:'baixo',                // por baixo das opções: o que cada divisão tem por baixo (FIX375)
     key:'pavPorBaixo',
     // idem para o pavimento: por baixo é outra fração aquecida
-    cond:()=>!pisoEntreFracoes()});
+    // o piso já disse o que está por baixo: não se volta a perguntar (FIX391b)
+    cond:()=>!pisoEntreFracoes()&&!pavimentoPeloPiso()});
 
   /* A cave (ou garagem) ocupa TODA a área do piso de cima, ou só parte?
      Quando ocupa parte, o piso de cima tem DUAS envolventes de baixo: a laje
      sobre o espaço não útil e o pavimento em contacto com o solo no resto.
      Assumir uma só era perder metade da envolvente. */
   qs.push({id:'pav-abrangencia',ctx:'Pavimento',
-    text:'O espaço por baixo ocupa toda a área da fração?',
+    get text(){ return pavimentoPeloPiso()==='enu'?'O pavimento está 100% sobre a cave/garagem?':'O espaço por baixo ocupa toda a área da fração?'; },
     hint:'Uma cave ou garagem que ocupe só parte deixa o resto do pavimento em '+
          'contacto com o solo — e são duas envolventes diferentes.',
     chips:['Toda a área','Só parte — o resto assenta no solo','Não sei'],
     key:'pavAbrangencia',
     cond:()=>{
       if(pisoEntreFracoes()) return false;      // não há pavimento próprio a caracterizar
+      if(pavimentoPeloPiso()==='enu') return true;
+      if(pavimentoPeloPiso()==='fracao') return false;
       const v=String(D.pavPorBaixo||'').toLowerCase();
       if(/garagem|arrecada|loja|com[ée]rcio|cave/.test(v)) return true;
       // sem resposta, pergunta-se quando há cave declarada como ENU
@@ -3995,7 +4004,9 @@ function renderEnuInline(){
   const tl=document.createElement('div');tl.className='aqs-lbl';tl.textContent='Tipo de espaço não útil';
   const trow=document.createElement('div');trow.className='ve-chips';
 
-  const TIPOS_ENU=['Circulação comum',ENU_ELEVADOR,'Marquise','Garagem','Edifício adjacente','Fracção comercial'];
+  /* a loja do lado não é espaço não útil: é a fração adjacente, sem perdas,
+     e mede-se nas paredes da divisão (FIX391) */
+  const TIPOS_ENU=['Circulação comum',ENU_ELEVADOR,'Marquise','Garagem','Edifício adjacente'];
   TIPOS_ENU.forEach(tipo=>{
     const c=document.createElement('div');
     c.className='ve-chip'+(D.enuTipos[tipo]?' on':'');
@@ -4183,6 +4194,53 @@ function pisoEntreFracoes(){
    (1) ou térreo (4) — no R/C por cima há outra fração. A pergunta da cobertura
    fica nas «perguntas que não apareceram», para o caso raro. Sem localização
    do piso respondida, o «R/C» da morada chega. */
+/* O QUE ESTÁ POR CIMA E POR BAIXO NÃO PODE DIZER DUAS COISAS (FIX391).
+   Num levantamento real a localização do piso dizia «sobre cave», o pavimento
+   «terreno» e a cobertura «terraço» — respostas de dias diferentes. O TXT
+   punha pavimento térreo e cobertura numa loja sobre a cave, sem aviso.
+   Numa fração a localização do piso manda; o que a contradiz fica de fora e
+   é dito. */
+function incoerenciasPisoFracao(){
+  const out=[];
+  if(D.edificioTipo!=='Apartamento') return out;
+  const pl=String(D.pisoLocal||'').trim(); if(!pl) return out;
+  const NOME={'1':'sobre cave/espaço não útil','2':'intermédio (outra fração por cima e por baixo)','2*':'intermédio com cobertura ou pavimento próprio','3':'último piso','4':'rés-do-chão'};
+  const pb=String(D.pavPorBaixo||'').toLowerCase();
+  if(pb){
+    const ehSolo=/terreno|solo/.test(pb), ehEnu=/garagem|arrecada|loja|com[ée]rcio|cave/.test(pb), ehFr=/outra fra/.test(pb);
+    if(pl==='1'&&(ehSolo||ehFr)) out.push({k:'pav',msg:'Localização do piso «'+NOME[pl]+'» e, por baixo do espaço, «'+D.pavPorBaixo+'» — não batem. Confirma qual é: muda uma das duas.'});
+    if(pl==='4'&&ehFr) out.push({k:'pav',msg:'Localização do piso «'+NOME[pl]+'» e, por baixo do espaço, «'+D.pavPorBaixo+'» — num rés-do-chão por baixo é terreno ou cave. Confirma.'});
+    if((pl==='2'||pl==='3')&&(ehSolo||ehEnu)) out.push({k:'pav',msg:'Localização do piso «'+NOME[pl]+'» e, por baixo do espaço, «'+D.pavPorBaixo+'» — não batem. Confirma.'});
+  }
+  const cb=String(D.coberturaTipoEsc||'').trim();
+  if(cb&&!/não tem|nao tem|não aplic|nao aplic/i.test(cb)&&(pl==='1'||pl==='2'||pl==='4'))
+    out.push({k:'cob',msg:'Cobertura «'+cb+'» respondida, mas a localização do piso («'+NOME[pl]+'») diz que há outra fração por cima. A cobertura ficou de fora. Se a fração tem cobertura própria, a localização é «intermédio com cobertura própria» ou «último piso».'});
+  return out;
+}
+/* O QUE ESTÁ POR BAIXO JÁ FOI DITO NA LOCALIZAÇÃO DO PISO (FIX391b).
+   Pedido do Renato (11/10/2026): «se eu digo logo no início que é pavimento
+   sobre garagem, não voltes a perguntar se está sobre o solo; quanto muito
+   pergunta se o pavimento está 100% sobre a cave ou não».
+   Numa fração: «sobre cave/espaço não útil» (1) → por baixo é cave; «intermédio»
+   (2) e «último piso» (3) → por baixo é outra fração. A pergunta «o que está
+   por baixo?» só fica para o rés-do-chão e para o intermédio com pavimento
+   próprio (2*). Uma resposta antiga que contradiga o piso é substituída. */
+function pavimentoPeloPiso(){
+  if(D.edificioTipo!=='Apartamento') return '';
+  const pl=String(D.pisoLocal||'').trim();
+  return pl==='1'?'enu':(pl==='2'||pl==='3')?'fracao':'';
+}
+function derivarPavimentoDoPiso(Dx){
+  Dx=Dx||D;
+  if(normEdificioTipo(Dx.edificioTipo)!=='Apartamento') return;
+  const pl=String(Dx.pisoLocal||'').trim(), pb=String(Dx.pavPorBaixo||'');
+  if(pl==='1'&&!/garagem|arrecada|loja|com[ée]rcio|cave/i.test(pb)){
+    Dx.pavPorBaixo='Cave'; Dx._pavPeloPiso=true;
+  } else if((pl==='2'||pl==='3')&&!/outra fra/i.test(pb)){
+    Dx.pavPorBaixo='Outra fração'; Dx._pavPeloPiso=true;
+    delete Dx.pavAbrangencia;
+  }
+}
 function apartamentoSemCobertura(){
   if(D.edificioTipo!=='Apartamento') return false;
   const pl=String(D.pisoLocal||'').trim();
@@ -4216,6 +4274,7 @@ function renderPisoLocal(wrap){
     vestirOpcao(c,'pisoLocal',val,label);
     c.onclick=()=>{
       D.pisoLocal=val;
+      try{ derivarPavimentoDoPiso(D); }catch(e){}
       delete D.pisoLocalDeDocumento;
       list.querySelectorAll('.piso-loc-chip').forEach(x=>x.classList.remove('on'));
       c.classList.add('on');
@@ -7749,6 +7808,55 @@ const TIJOLO_VIDRO_U=1.8;
 const TIJOLO_VIDRO_G=0.57;
 const TIJOLO_VIDRO_ESP=0.20;
 const ehTijoloVidro=ve=>String((ve&&ve.tipo)||'').toLowerCase().includes('tijolo');
+/* FACHADA CORTINA (FIX391). Pedido do Renato (11/10/2026): «quando tem
+   fachada cortina não existe caixilharia nem cor a declarar na caixilharia».
+   O vão é o pano de vidro: declara-se o vidro (simples ou duplo), a proteção e
+   o sombreamento. Material, cor, abertura, corte térmico e caixa de estore não
+   se perguntam nem se escrevem. */
+const ehFachadaCortina=ve=>!!ve&&String(ve.tipo||'')==='Fachada cortina';
+/* Fachada cortina com vidro simples (Renato, 11/10/2026): vidro simples
+   incolor de 10 mm, fator solar 0,85, U = 5,7 W/(m².°C). */
+const FC_SIMPLES={uw:5.7,g:0.85,esp:10};
+const semCaixilho=ve=>ehTijoloVidro(ve)||ehFachadaCortina(ve);
+/* simples ou duplo: na fachada cortina é o vidro do pano */
+function vidroDoVao(ve){
+  if(ehFachadaCortina(ve)) return /duplo|triplo/i.test(String(ve.vidroPano||''))?'duplo':
+    (/simples/i.test(String(ve.vidroPano||''))?'simples':'duplo');
+  return String((ve&&ve.tipo)||'').toLowerCase().includes('duplo')?'duplo':'simples';
+}
+/* g⊥,vi: o do fabricante quando dado; senão o do vidro corrente (Manual SCE):
+   simples 0,85, duplo 0,75; tijolo de vidro 0,57. */
+function gviDoVao(ve){
+  const m=parseFloat(String((ve&&ve.gviManual)||'').replace(',','.'));
+  if(m>0&&m<1) return {g:m,origem:'fabricante'};
+  if(ehTijoloVidro(ve)) return {g:TIJOLO_VIDRO_G,origem:'Manual SCE (tijolo de vidro)'};
+  if(ehFachadaCortina(ve)&&vidroDoVao(ve)==='simples') return {g:FC_SIMPLES.g,origem:'fachada cortina, vidro simples 10 mm'};
+  return vidroDoVao(ve)==='duplo'?{g:0.75,origem:'vidro duplo corrente (Manual SCE)'}:{g:0.85,origem:'vidro simples corrente (Manual SCE)'};
+}
+/* A designação do FCC (dg_tipo_janelas, Listas CN83:CN96). */
+function tipoSolucaoFCC(ve){
+  if(ehFachadaCortina(ve)) return 'Fachada cortina';
+  if(ehTijoloVidro(ve)) return 'Tijolo de vidro';
+  const m=String(ve.caixMat||'').toLowerCase(), vd=vidroDoVao(ve);
+  if(!m) return '___ (CAIXILHARIA POR RESPONDER) com vidro '+vd;
+  const mat=/mad/.test(m)?'Caixilharia de madeira':/pvc|pl[áa]st/.test(m)?'Caixilharia plástica':
+    ('Caixilharia metálica '+(ve.corteTerm?'com':'sem')+' corte térmico');
+  return mat+' com vidro '+vd;
+}
+/* Proteção no FCC (dg_solucao_protecao, Listas CN119:CN122). */
+function tipoProtecaoFCC(ve){
+  const ex=String(ve.prot||'').toLowerCase(), it=String(ve.protInt||'').toLowerCase();
+  if(!ex) return '___ (PROTEÇÃO EXTERIOR POR RESPONDER)';
+  if(!/sem prote/.test(ex)&&!/portada interior/.test(ex)) return 'Com proteção solar pelo exterior';
+  if(/portada interior/.test(ex)||(it&&!/^(nenhum|n[ãa]o|sem)/.test(it))) return 'Com proteção solar pelo interior';
+  return 'Sem proteção solar';
+}
+/* Ocupação noturna (nota r do FCC): Uwdn em vez de Uw. Em comércio só no
+   alojamento. */
+function ocupacaoNoturnaPES(){
+  try{ return ramoDoEspaco(null)==='alojamento'; }catch(e){ return false; }
+}
+
 /* Em comércio a montra é a regra: entra «Fachada cortina», entrada do dropdown
    dg_tipo_janelas do FCC. Escolhida, o vão passa a caixilharia FIXA (é o que
    uma montra é) e pergunta-se o vidro do pano. O tijolo de vidro tem valor
@@ -7862,6 +7970,7 @@ function prepararDadosCarregados(Dx){
   try{ limparLixoD(Dx); }catch(e){} try{ normalizarVaosD(Dx); }catch(e){}
   try{ sincronizarDerivados(Dx); }catch(e){} try{ migrarTetoInclinado(Dx); }catch(e){}
   try{ corrigirPotenciaQnPn(Dx); }catch(e){}
+  if(Dx.edificioTipo!=null) Dx.edificioTipo=normEdificioTipo(Dx.edificioTipo);
   /* levantamentos de comércio de antes da base 3.85 guardavam a climatização
      em pesClima; a pergunta geral passou a ser temClimatizacao (FIX390) */
   if(Dx.pesClima&&!Dx.temClimatizacao) Dx.temClimatizacao=Dx.pesClima;
@@ -8426,7 +8535,7 @@ function renderVaosInline(div,n){
       h.innerHTML='<span>'+ico+' '+titulo+'</span><span class="ve-grupo-cont"></span>';
       g.appendChild(h); card.appendChild(g); return g;
     };
-    const gVid=_grupoVao('🪟','Vidro e caixilharia','vidro');
+    const gVid=_grupoVao('🪟',ehFachadaCortina(ve)?'Vidro (fachada cortina)':'Vidro e caixilharia','vidro');
     const gProt=_grupoVao('🛡️','Proteções','prot');
     const gSomb=_grupoVao('🌤️','Sombreamento','somb');
     /* Marca um bloco como pergunta: o primeiro filho é o rótulo. */
@@ -8474,8 +8583,9 @@ function renderVaosInline(div,n){
            assume-se caixilharia metálica, que é o que existe nestes sistemas.
            O vidro concreto (simples/duplo) pergunta-se por baixo. */
         if(o==='Fachada cortina'){
-          ve.abertura='Fixo';
-          if(!ve.caixMat||ve.caixMat==='Madeira') ve.caixMat='Alumínio';
+          /* sem caixilharia a declarar (FIX391) */
+          ve.caixMat=''; ve.caixCor=''; if(!/fix|bascul/i.test(ve.abertura||'')) ve.abertura=''; ve.corteTerm=false; ve.caixEstore=false;
+          delete ve._porDefeito;
           ve.tipoJanelaFCC='Fachada cortina';
         } else if(ehTijoloVidro({tipo:o})){
           ve.tipoJanelaFCC='Tijolo de vidro';
@@ -8504,26 +8614,24 @@ function renderVaosInline(div,n){
       espDiv.style.cssText='margin-top:6px;padding:8px;border:1px dashed var(--ac);border-radius:8px;background:var(--acl)';
       const tl=document.createElement('div');
       tl.style.cssText='font-size:11px;font-weight:600;color:var(--acd);margin-bottom:6px';
-      tl.textContent=ve.tipo==='Fachada cortina'?'Fachada cortina (montra)':'Tijolo de vidro';
+      tl.textContent=ve.tipo==='Fachada cortina'?'Fachada cortina — sem caixilharia a declarar':'Tijolo de vidro';
       espDiv.appendChild(tl);
       if(ve.tipo==='Fachada cortina'){
-        espDiv.appendChild(_cChips('Vidro do pano',ve.vidroPano||'',['Simples','Duplo','Triplo'],
+        espDiv.appendChild(_cChips('Vidro do pano',ve.vidroPano||'',['Simples','Duplo'],
           v=>{ve.vidroPano=v;saveVaosToD(div);renderVaosInline(div,D.divisoesDados[div].vaos.length);}));
-        const r=calcUw({tipo:(ve.vidroPano==='Simples'?'Vidro simples':'Vidro duplo'),
-          caixMat:ve.caixMat||'Alumínio',corteTerm:!!ve.corteTerm,abertura:'Fixo',
-          prot:ve.prot||'Sem proteção',caixAr:ve.caixAr||6});
-        const _a=UW_ASSUMIDO['Fachada cortina'];
-        ve.uwCalc=(r.uw!=null?r.uw:_a.uw); ve.uwdnCalc=r.uwdn;
-        if(!ve.gviCalc) ve.gviCalc=_a.g;
-        espDiv.appendChild(_cNota('Uw estimado pelo Quadro III do ITE50 para caixilharia '+
-          ((ve.caixMat||'Alumínio').toLowerCase())+(ve.corteTerm?' com':' sem')+' corte térmico, caixilho fixo: '+
-          (r.uw!=null?fmtUw(r.uw):'—')+' W/m²·°C. Confirmar contra a declaração de desempenho do sistema, se houver.'));
+        espDiv.appendChild(_cChips('Abertura',/bascul/i.test(ve.abertura||'')?'Basculante':(/fix/i.test(ve.abertura||'')?'Fixa':''),['Fixa','Basculante'],
+          v=>{ve.abertura=(v==='Fixa'?'Fixo':'Basculante');saveVaosToD(div);}));
+        const r=calcUw(ve);
+        ve.uwCalc=r.uw; ve.uwdnCalc=r.uwdn; ve.gviCalc=gviDoVao(ve).g;
+        espDiv.appendChild(_cNota('Sem caixilharia a declarar: material, cor e corte térmico não se perguntam (sai «sem classificação à permeabilidade ao ar, sem corte térmico e de cor clara»). '+
+          (ve.vidroPano?'U '+(r.uw!=null?fmtUw(r.uw):'—')+' W/m²·°C ('+(r.origem==='fabricante'?'do fabricante':r.origem==='ITE50 (vão fixo)'?'ITE50, vão fixo metálico sem corte térmico':'vidro simples de 10 mm')+
+          ') · g⊥,vi '+String(ve.gviCalc).replace('.',',')+'.':'Escolhe o vidro do pano.')));
       }
       espDiv.appendChild(_cInput('Uw do fabricante [W/m²·°C]',ve.uwManual,'opcional',
         v=>{ve.uwManual=v;saveVaosToD(div);},'number'));
       espDiv.appendChild(_cInput('Fator solar do vidro g⊥,vi',ve.gviManual,'opcional',
         v=>{ve.gviManual=v;saveVaosToD(div);},'number'));
-      card.appendChild(espDiv);
+      (ve.tipo==='Fachada cortina'?gVid:card).appendChild(espDiv);   // o vidro do pano logo a seguir ao tipo (FIX391)
     }
 
     // proteção solar exterior
@@ -8721,7 +8829,9 @@ function renderVaosInline(div,n){
        de estore não existem neste tipo de vão — perguntá-los é pedir dados
        que ninguém pode dar, e que depois entram no cálculo como se fossem
        verdade. Mostra-se em vez disso o que o Manual fixa. */
-    if(ehTijoloVidro(ve)){
+    if(ehFachadaCortina(ve)){
+      /* nada de caixilharia: o vidro do pano está no bloco de cima (FIX391) */
+    } else if(ehTijoloVidro(ve)){
       const tv=document.createElement('div');
       tv.style.cssText='font-size:12px;color:var(--tx2);background:var(--bg3);'+
         'border-radius:8px;padding:9px 11px;margin-top:8px;line-height:1.5';
@@ -8828,7 +8938,7 @@ function renderVaosInline(div,n){
     const atualizarUwLive=()=>{
       try{
         const r=calcUw(ve);
-        const quadro=(ve.caixMat||'').toLowerCase().includes('mad')?'Quadro III.1':'Quadro III.2';
+        const quadro=ehFachadaCortina(ve)?(r.origem==='fabricante'?'fabricante':'fachada cortina (ITE50, vão fixo metálico)'):(ve.caixMat||'').toLowerCase().includes('mad')?'Quadro III.1':'Quadro III.2';
         uwLive.textContent=r.uwdn!==null
           ?`ITE50 · Uw ${fmtUw(r.uw)} → Uwdn ${fmtUw(r.uwdn)} W/(m².°C) — ${quadro}`
           :`ITE50 · Uw ${fmtUw(r.uw)} W/(m².°C) — sem proteção exterior, sem Uwdn — ${quadro}`;
@@ -11071,6 +11181,7 @@ function valorDeD(key){
   if(key==='levParedes'&&v==='sim') return '';
   if(key==='inerciaTermica'&&!D.inerciaConfirmada) return '';
   if(key==='pisos'&&!(+v>1)&&!D.pisosDeDocumento) return '';
+  if(key==='edificioTipo') return ({Apartamento:'Fração',Moradia:'Edifício autónomo'})[normEdificioTipo(v)]||String(v).trim();
   return String(v).trim();
 }
 let _visita=null, _limpoNaVisita=null;
@@ -12722,7 +12833,7 @@ function saveToD(key,raw){
   // Recurso: numa MORADIA unifamiliar o prédio é a própria habitação, por isso
   // se o documento não indicou os pisos da fração mas indicou os do prédio, o
   // valor serve. Nunca se aplica a apartamentos (prédio ≠ fração).
-  if(key==='edificioTipo'&&v==='Moradia'&&D.nPisosEdificio&&!D.pisosDeDocumento){
+  if(key==='edificioTipo'&&normEdificioTipo(v)==='Moradia'&&D.nPisosEdificio&&!D.pisosDeDocumento){
     const n=parseInt(D.nPisosEdificio);
     if(n>0&&n<=6){D.pisos=n;D.pisosDeDocumento=true;registarAlteracao('pisos',String(n),'');}
   }
@@ -12796,7 +12907,7 @@ function saveToD(key,raw){
   else if(key==='aqsMarca'){D.aqsMarca=v;}
   else if(key==='solar'){D.solar=v;}
   else if(key==='solDet'){D.solDet=v;}
-  else if(key==='edificioTipo'){D.edificioTipo=v;}
+  else if(key==='edificioTipo'){D.edificioTipo=normEdificioTipo(v); D.edificioTipoLabel=({Apartamento:'Fração',Moradia:'Edifício autónomo'})[D.edificioTipo]||v;}
   else if(key==='localidade'){D.localidade=v;}
   else if(key==='freguesia'){D.freguesia=v;}
   else if(key==='concelho'){
@@ -12815,7 +12926,7 @@ function saveToD(key,raw){
   else if(key==='anoConstrucao'){D.anoConstrucao=v.toLowerCase().includes('não sei')?'':v;}
   else if(key==='inerciaTermica'){D.inerciaTermica=v;D.inerciaConfirmada=true;}
   else if(key==='nPisosEdificio'){D.nPisosEdificio=v.replace('+','');}
-  else if(key==='pisoLocal'){D.pisoLocal=v;}
+  else if(key==='pisoLocal'){D.pisoLocal=v; try{ derivarPavimentoDoPiso(D); }catch(e){} }
   else if(key==='levParedes'){D.levParedes=v;}
   else if(key==='ventTipo'){porTipoVentilacao(v);}
   else if(key==='temIluminacao'){
@@ -13058,9 +13169,11 @@ function vaosIncompletos(div){
     if(!(num(v&&v.larg)>0&&num(v&&v.alt)>0)) return null;
     const f=[];
     if(!v.tipo) f.push('tipo de vidro');
-    if(!ehTijoloVidro(v)){
+    if(!semCaixilho(v)){
       if(!v.caixMat) f.push('caixilharia'); if(!v.abertura) f.push('abertura'); if(!v.caixCor) f.push('cor');
     }
+    if(ehFachadaCortina(v)&&!v.vidroPano) f.push('vidro do pano');
+    if(ehFachadaCortina(v)&&!v.abertura) f.push('abertura');
     if(!v.prot) f.push('proteção exterior');
     return f.length?(v.id||'VE?')+': '+f.join(', '):null;
   }).filter(Boolean);
@@ -13371,10 +13484,19 @@ function calcUw(ve){
     const man=_n(ve.uwManual);
     if(man!=null) return {uw:man,uwdn:man,origem:'fabricante'};
     if(ve.tipo==='Fachada cortina'){
-      const r=calcUw({tipo:(ve.vidroPano==='Simples'?'Vidro simples':'Vidro duplo'),
-        caixMat:ve.caixMat||'Alumínio',corteTerm:!!ve.corteTerm,abertura:'Fixo',
-        prot:ve.prot||'Sem proteção',caixAr:ve.caixAr||6,_semDesvio:true});
-      if(r&&r.uw!=null) return {uw:r.uw,uwdn:r.uwdn,origem:'ITE50 (caixilho fixo)'};
+      /* sem caixilharia declarada: a linha do ITE50 é a do vão fixo metálico
+         sem corte térmico (FIX391) */
+      const r=calcUw({tipo:(vidroDoVao(ve)==='simples'?'Vidro simples':'Vidro duplo'),
+        caixMat:'Alumínio',corteTerm:false,abertura:'Fixo',
+        prot:ve.prot||'Sem proteção',protInt:ve.protInt,protCor:ve.protCor,caixAr:ve.caixAr||6,_semDesvio:true});
+      /* vidro simples: U = 5,7 (FIX391b). O Uwdn, quando há proteção, leva a
+         mesma resistência da proteção (ΔR) que o ITE50 daria ao vão. */
+      if(vidroDoVao(ve)==='simples'){
+        let uwdn=null;
+        if(r&&r.uw>0&&r.uwdn!=null&&r.uwdn>0){ const dR=1/r.uwdn-1/r.uw; uwdn=+(1/(1/FC_SIMPLES.uw+dR)).toFixed(2); }
+        return {uw:FC_SIMPLES.uw,uwdn,origem:'fachada cortina, vidro simples 10 mm'};
+      }
+      if(r&&r.uw!=null) return {uw:r.uw,uwdn:r.uwdn,origem:'ITE50 (vão fixo)'};
     }
     const a=UW_ASSUMIDO[ve.tipo];
     return {uw:a.uw,uwdn:a.uw,origem:'valor assumido'};
@@ -13749,7 +13871,7 @@ function classePermeabilidadeVao(ve){
 }
 function gerarTextoVE(ve, div){
   const r=calcUw(ve);
-  const vidro=(ve.tipo||'').toLowerCase().includes('duplo')?'duplo':'simples';
+  const vidro=vidroDoVao(ve);
   const mat=ve.caixMat||'Alumínio';
   const matStr=mat.toLowerCase();
   const corteTerm=ve.corteTerm||(matStr.includes('pvc'));
@@ -13846,6 +13968,33 @@ function gerarTextoVE(ve, div){
     }
   }
 
+  /* FACHADA CORTINA — O TEXTO-TIPO DO RENATO (FIX391b, 11/10/2026):
+     «Vão envidraçado cortina de fachada sem protecção exterior sem caixilharia,
+     sem classificação à permeabilidade ao ar, fixa ou basculante, sem corte
+     térmico e de cor clara. Envidraçado composto por vidro simples incolor com
+     espessura de 10mm, com factor solar de 0,85. Coeficiente de transmissão
+     térmica do vão (U) igual a 5,7 (W/m2.ºC).»
+     A proteção exterior e a abertura saem do que se respondeu no vão. */
+  if(ehFachadaCortina(ve)){
+    const vp=String(ve.vidroPano||'').trim();
+    const _ex=String(ve.prot||'').trim();
+    const protFC=!_ex?'___ (PROTEÇÃO EXTERIOR POR RESPONDER)':(/sem prote/i.test(_ex)?'sem protecção exterior':'com protecção exterior');
+    const _ab=String(ve.abertura||'').toLowerCase();
+    const aberFC=/fix/.test(_ab)?'fixa':/bascul/.test(_ab)?'basculante':'___ (FIXA OU BASCULANTE — POR RESPONDER)';
+    const _g=gviDoVao(ve);
+    const _gTxt=String(_g.g.toFixed(2)).replace('.',',');
+    const comp=!vp?'vidro ___ (POR RESPONDER: simples ou duplo)':(vidro==='simples'
+      ?'vidro simples incolor com espessura de '+FC_SIMPLES.esp+'mm'
+      :(()=>{ const pv=panosVidroDuplo(caixAr); return `vidro duplo incolor ${pv.e1} mm + caixa de ar ${pv.ar}mm + incolor ${pv.e2} mm`; })());
+    const _usaDn=r&&r.uwdn!==null&&ocupacaoNoturnaPES();
+    const _uwV=_usaDn?r.uwdn:(r?r.uw:null);
+    const _fmtU=x=>{ const v=Math.round(x*100)/100; return (Math.abs(v*10-Math.round(v*10))<1e-9?v.toFixed(1):v.toFixed(2)).replace('.',','); };
+    const uwFC=_uwV!=null?`Coeficiente de transmissão térmica do vão (${_usaDn?'Uwdn':'U'}) igual a ${_fmtU(_uwV)} (W/m2.ºC)`+
+      (r.origem==='fabricante'?', valor da declaração de desempenho do sistema.':'.'):'';
+    const l1=`Vão envidraçado cortina de fachada ${protFC} sem caixilharia, sem classificação à permeabilidade ao ar, ${aberFC}, sem corte térmico e de cor clara. `+
+      `Envidraçado composto por ${comp}, com factor solar de ${_gTxt}. ${uwFC}`.trim();
+    return {txt:l1+'\n'+protTxt, uw:r?r.uw:null, uwdn:r?r.uwdn:null};
+  }
   /* TIJOLO DE VIDRO — DESCRIÇÃO PRÓPRIA.
      A frase-tipo fala de caixilharia, classe de permeabilidade e sistema de
      abertura. Num tijolo de vidro nada disso existe, e escrever «caixilharia de
@@ -14708,8 +14857,26 @@ function _normVao(v){
 function _mapaTexto(o){ if(!_ehObj(o)) return {}; Object.keys(o).forEach(k=>{ if(o[k]!=null&&typeof o[k]!=='string'){ const t2=_txt(o[k]); if(t2==='') delete o[k]; else o[k]=t2; } }); return o; }
 function _mapaListas(o){ if(!_ehObj(o)) return {}; Object.keys(o).forEach(k=>{ o[k]=_lstTxt(o[k]); }); return o; }
 /* espEmCm — a espessura sempre em centímetros — está no núcleo partilhado com a revisão. */
+/* FRAÇÃO / EDIFÍCIO AUTÓNOMO SÃO RÓTULOS, NÃO VALORES (FIX391). Por dentro
+   continua 'Apartamento'/'Moradia', que é o que dezenas de regras comparam
+   (cobertura, piso, PTL). Um caminho da app gravava o rótulo tal e qual
+   («Fração») e todas essas regras deixavam de se aplicar: num levantamento
+   real saiu cobertura em terraço e pavimento térreo numa loja declarada
+   «sobre cave». */
+function normEdificioTipo(v){
+  const s=String(v==null?'':v).trim();
+  if(/^fra[cç]{1,2}[ãa]o/i.test(s)) return 'Apartamento';
+  if(/^edif[ií]cio aut[óo]nomo/i.test(s)) return 'Moradia';
+  return s;
+}
 function normalizarEsquemaD(Dx){
   Dx=Dx||D;
+  if(Dx.edificioTipo!=null){ const _et=normEdificioTipo(Dx.edificioTipo); if(_et!==Dx.edificioTipo){ Dx.edificioTipo=_et; } }
+  try{ derivarPavimentoDoPiso(Dx); }catch(e){}
+  /* fachada cortina sem restos de caixilharia (FIX391): levantamentos antigos
+     traziam alumínio, cor e abertura de quando o vão era outro tipo */
+  try{ Object.values(Dx.divisoesDados||{}).forEach(dd=>{ ((dd&&dd.vaos)||[]).forEach(v=>{
+    if(v&&v.tipo==='Fachada cortina'){ v.caixMat=''; v.caixCor=''; if(!/fix|bascul/i.test(v.abertura||'')) v.abertura=''; v.corteTerm=false; v.caixEstore=false; } }); }); }catch(e){}
   ['espParede','espParedeCirc'].forEach(k=>{ if(Dx[k]!=null&&String(Dx[k]).trim()!==''){ const c=espEmCm(Dx[k]); if(c) Dx[k]=c; } });
   ['espParedeDiv','espParedeInt'].forEach(k=>{ const o=Dx[k]; if(o&&typeof o==='object'&&!Array.isArray(o)) Object.keys(o).forEach(n=>{ const c=espEmCm(o[n]); if(c) o[n]=c; }); });
   Object.keys(D_INICIAL).forEach(k=>{
@@ -14968,7 +15135,7 @@ function _verificarLevantamentoNucleo(){
       if(util){ nUteis++; areaUteis+=areaDoEspaco(nome); }
       if(!e.tab25) L(nome,'Tipo de espaço da Tabela 25 por escolher (iluminância)');
       if(!e.tipoVenti) L(nome,'Tipo de espaço para o caudal de ar novo por escolher');
-      if(util&&!_n(e.ocupantes)) L(nome,'Nº de ocupantes por preencher');
+      if(util&&!_n(e.ocupantes)&&String(e.ocupantes==null?'':e.ocupantes).trim()!=='0') L(nome,'Nº de ocupantes por preencher');
       if(!_n(e.iluminancia)&&D.temIluminacao!=='Não') L(nome,'Iluminância [lux] por preencher');
       if(util&&areaDoEspaco(nome)<=0) L(nome,'Área útil de pavimento por medir');
       const usaRefI=((D.ilumRef||{})[nome]==='Sim');
@@ -15146,7 +15313,10 @@ function _verificarLevantamentoNucleo(){
   if(!D.localidade&&!D.concelho) L('Identificação','Localidade/concelho em falta (zona climática e região A/B)');
   if(!D.tipologiaAdene) L('Identificação','Tipologia dominante (Portal ADENE) por definir');
   if(!D.edificioTipo) L('Identificação','Tipo de edifício (apartamento/moradia) por definir');
-  if(D.edificioTipo==='Apartamento'&&!D.pisoLocal) L('Identificação','Localização do piso do apartamento em falta');
+  if(D.edificioTipo==='Apartamento'&&!D.pisoLocal) L('Identificação','Localização do piso da fração em falta');
+  try{ incoerenciasPisoFracao().forEach(x=>(x.k==='cob'?A:E)('Identificação',x.msg)); }catch(e){}
+  try{ if(pavimentoPeloPiso()==='enu'&&!String(D.pavAbrangencia||'').trim())
+    L('Pavimento','O pavimento está 100% sobre a cave/garagem? por responder (assumida toda a área)'); }catch(e){}
   try{ const _ai=avisoIdadeDaMatriz(); if(_ai) A('Sistemas',_ai); }catch(e){}
   // potência do AQS lida de «Qn» sem «Pn» na chapa: avisa-se, não se adivinha (FIX370)
   try{ if(D.aqsPotenciaOrigem==='chapa'&&/\bQ\s*n\b/i.test(String(D.aqsPotenciaChapa||''))&&!/\bP\s*n\b/i.test(String(D.aqsPotenciaChapa||'')))
@@ -15913,7 +16083,9 @@ function _verificarLevantamentoNucleo(){
           ' — a orientação do vão ou a da parede está errada');
       if(!ve.larg||!ve.alt) L('Vãos',ref+': sem dimensões');
       if(!ve.tipo) L('Vãos',ref+': tipo de vidro por definir');
-      if(!ehTijoloVidro(ve)){
+      if(ehFachadaCortina(ve)&&!ve.vidroPano) L('Vãos',ref+': fachada cortina — vidro do pano (simples ou duplo) por definir');
+      if(ehFachadaCortina(ve)&&!ve.abertura) L('Vãos',ref+': fachada cortina — fixa ou basculante por definir');
+      if(!semCaixilho(ve)){
         if(!ve.caixMat) L('Vãos',ref+': material da caixilharia por definir');
         if(!ve.abertura) L('Vãos',ref+': tipo de abertura por definir');
         if(!ve.caixCor) L('Vãos',ref+': cor da caixilharia por definir');
@@ -17454,6 +17626,8 @@ function agruparVEsPorCaracteristicas(){
       (ve.protInt||'').toLowerCase(),
       (ve.protCor||'').toLowerCase(),
       ve.caixEstore?'ce':'',
+      (ve.vidroPano||'').toLowerCase(),
+      String(ve.uwManual||''),String(ve.gviManual||''),
     ].join('|');
   }
 
@@ -17816,6 +17990,7 @@ const ORDEM_SECCOES_TXT=[
   'IDENTIFICAÇÃO DO IMÓVEL',
   'DECLARAÇÃO DE VISITA',
   'ENQUADRAMENTO DO CERTIFICADO — EDIFÍCIO EXISTENTE',
+  'PONTOS A CONFIRMAR ANTES DO FCC',
   'DESCRIÇÃO SUCINTA DO EDIFÍCIO/FRAÇÃO (COMÉRCIO E SERVIÇOS)',
   'LISTA DOS ESPAÇOS INTERIORES ÚTEIS (folha EdificioN do FCC)',
   'ILUMINÂNCIA E DPI (Tabela 25 da Portaria 138-I/2021)',
@@ -17841,9 +18016,10 @@ const ORDEM_SECCOES_TXT=[
   'PAVIMENTO — DUAS SOLUÇÕES (parte sobre espaço não útil, parte no solo)',
   'PAVIMENTO',
   'PAVIMENTO EM CONTACTO COM O SOLO',
+  'PAVIMENTO — RESPOSTAS QUE NÃO BATEM',
   'PAREDES EXTERIORES — SOLUÇÕES CORRENTES E PTP',
   'VÃOS ENVIDRAÇADOS — TEXTOS PARA CE',
-  'VÃOS ENVIDRAÇADOS — LISTA FINAL ITeCons',
+  'VÃOS ENVIDRAÇADOS — LISTA DOS VÃOS',
   'VÃOS ENVIDRAÇADOS — SOMBREAMENTO POR ESTAÇÃO',
   'VÃOS ENVIDRAÇADOS INTERIORES (para espaço não útil)',
   'PORTAS EM CONTACTO COM O EXTERIOR / ENU',
@@ -17861,7 +18037,7 @@ const ORDEM_SECCOES_TXT=[
   'ENERGIA RENOVÁVEL — PAINÉIS FOTOVOLTAICOS',
   'TABELAS ITeCons REH — FORMATO DA FOLHA "Introducao de Dados"',
   'OBSERVAÇÕES',
-  'ÍNDICE DE FOTOS DE EQUIPAMENTO (para anexar no ITeCons)',
+  'ÍNDICE DE FOTOS DE EQUIPAMENTO (para anexar ao processo)',
   'HISTÓRICO DE ALTERAÇÕES',
 ];
 /* SECÇÕES SEM CONTEÚDO DIZEM-NO.
@@ -21755,7 +21931,7 @@ function _buildTxtNucleo(){
      Poupa reabrir meia dúzia de processos à procura de um semelhante. */
   try{
     const par=certificadosParecidos(3);
-    if(par.lista.length&&par.lista[0].pct>=45){
+    if(false&&par.lista.length&&par.lista[0].pct>=45){   // base de CE de habitação: não serve ao comércio (FIX391)
       t+='\n';
       t+=ln('▸ CE mais parecido',
         'nº '+par.lista[0].c.n+' ('+par.lista[0].c.cidade+') — '+par.lista[0].pct+'% de coincidência');
@@ -21770,11 +21946,32 @@ function _buildTxtNucleo(){
       t+=ln('  procurar por','"'+p0.c.n+'"  (nº do certificado no nome do ficheiro)');
     }
   }catch(e){}
+  /* O QUE FALTA E O QUE NÃO BATE, NO TOPO DO TXT (FIX391). O verificador
+     corria no ecrã e não chegava ao ficheiro: quem lê o TXT no escritório não
+     sabia que a cobertura e o pavimento se contradiziam. */
+  let _pontosConfirmar='';
+  /* o verificador gera textos que passam por aqui: sem esta guarda era uma
+     chamada dentro da outra até rebentar a pilha */
+  if(!buildTxt._noVerificador) try{
+    buildTxt._noVerificador=true;
+    const _v=verificarLevantamento()||{};
+    const _inc=(_v.incoerencias||[]), _lac=(_v.lacunas||[]);
+    if(_inc.length||_lac.length){
+      _pontosConfirmar+=sep('PONTOS A CONFIRMAR ANTES DO FCC');
+      if(_inc.length){ _pontosConfirmar+='Respostas que não batem ('+_inc.length+'):\n';
+        _inc.forEach(x=>_pontosConfirmar+='  ⛔ '+(x.sec?x.sec+' — ':'')+x.msg+'\n'); }
+      if(_lac.length){ _pontosConfirmar+=(_inc.length?'\n':'')+'Em falta ('+_lac.length+'):\n';
+        _lac.slice(0,40).forEach(x=>_pontosConfirmar+='  · '+(x.sec?x.sec+' — ':'')+x.msg+'\n');
+        if(_lac.length>40) _pontosConfirmar+='  … e mais '+(_lac.length-40)+'\n'; }
+    }
+  }catch(e){}
+  finally{ buildTxt._noVerificador=false; }
   // Versão DO LEVANTAMENTO (1 = levantado no local; 2+ = revisto depois).
   // Distinta da versão da app, que identifica o programa.
   const _v=versaoLevantamento();
   t+=ln('Versão do levantamento',_v===1?'1 (levantamento de campo)':`${_v} (revisto${D._tsExportacao?' — última exportação '+D._tsExportacao:''})`);
   t+=ln('Versão da app',APP_VERSAO);
+  t+=_pontosConfirmar;   // FIX391
 
   // ── IDENTIFICAÇÃO DO IMÓVEL (extraída de caderneta predial / certidão permanente) ──
   if(D.numeroMatriz||D.numeroFracao||D.moradaCaderneta||D.concelhoCaderneta||D.conservatoria||D.numeroDescricaoPredial){
@@ -21922,20 +22119,21 @@ function _buildTxtNucleo(){
     Object.entries(D.peDireitos||{}).forEach(([p,v])=>{
       const mx=num(_pdMax[p]);
       const _pv=num(v)>0?_nm(num(v))+' m':v;
-      if(mx>0&&num(v)>0) t+=ln('Pé direito '+p,_pv+'  (teto inclinado: mínimo '+_nm(num(v))+
+      const _rp=Object.keys(D.peDireitos||{}).length>1?'Pé-direito '+p:'Pé-direito';
+      if(mx>0&&num(v)>0) t+=ln(_rp,_pv+'  (teto inclinado: mínimo '+_nm(num(v))+
         ' m, máximo '+_nm(mx)+' m)');
-      else t+=ln('Pé direito '+p,_pv);
+      else t+=ln(_rp,_pv);
     });
     if(D.peInclinado===true) t+=ln('Teto do último piso','Inclinado (sem teto falso horizontal)');
     if(D.peInclinado===true&&PE_ONDE[D.peMinOnde]) t+=ln('Mínimo do teto inclinado','junto à '+PE_ONDE[D.peMinOnde].toLowerCase());
-    if(D.coberturaTipoEsc) t+=ln('Cobertura',D.coberturaTipoEsc);
+    if(D.coberturaTipoEsc) t+=ln('Cobertura',D.coberturaTipoEsc+(incoerenciasPisoFracao().some(x=>x.k==='cob')?'  ⚠ não bate com a localização do piso — ficou de fora':''));
     else if(D.coberturaInclinada==='Sim') t+=ln('Cobertura','Inclinada');
   }
   t+=ln('Divisões',D.divisoes.join(', '));
   const nQ=D.divisoes.filter(ehQuarto).length;
   const nCB=D.divisoes.filter(ehCasaDeBanho).length;
   if(nQ) t+=ln('Quartos',nQ);
-  if(nCB) t+=ln('Casas de banho',nCB);
+  if(nCB) t+=ln('Instalações sanitárias',nCB);
   {
     const _desc=gerarDescricaoSucinta();
     t+='\nDescrição sucinta:\n'+_desc+'\n';
@@ -22194,7 +22392,7 @@ function _buildTxtNucleo(){
     const _vt=String(D.ventTipo||'').trim();
     const textoVent=/mec[âa]nica|h[íi]brida/i.test(_vt)
       ? `Ventilação ${_vt.toLowerCase().replace(/^mec[âa]nica/,'mecânica de')}, ___ (POR PREENCHER — equipamento, caudais e compartimentos servidos), ${condutasTxt}. Taxa de renovação de ar ${rphTxt}(h-1).`
-      : `Principais compartimentos com ventilação natural por intermédio dos vãos de fachada, ${condutasTxt}. S/ aberturas especiais de admissão de ar natural nas fachadas. Os vãos permitem arrefecimento nocturno. Taxa de renovação de ar ${rphTxt}(h-1).`;
+      : `Principais compartimentos com ventilação natural por intermédio dos vãos de fachada, ${condutasTxt}. S/ aberturas especiais de admissão de ar natural nas fachadas.`;
     t+='\nTexto para CE (ventilação):\n'+textoVent+'\n';
   }
 
@@ -22203,7 +22401,7 @@ function _buildTxtNucleo(){
      Os campos que a folha pede, já calculados do que a app recolheu: em vez de
      andar a somar áreas e alturas à mão, copia-se daqui. O que é estimado vem
      assinalado — a altura entra na velocidade do vento e essa afeta o caudal. */
-  {
+  if(false){   // ventilação ITeCons (REH): no FCC de comércio a ventilação é a do caudal de ar novo (FIX391)
     const v=ventResumoITeCons();
     t+=sep('VENTILAÇÃO — CAMPOS DA FOLHA ITeCons');
     t+=ln('Tipo de edifício',v.tipoEdificio);
@@ -22598,20 +22796,26 @@ function _buildTxtNucleo(){
               d.cop,d.eer,d.ano_fabrico].map(v=>v||'').join('|');
     }
     const gruposUE=[];
+    /* Duas chapas do mesmo modelo em que uma não deixou ler o ano não são
+       «especificações diferentes» (FIX391): agrupa-se quando todos os campos
+       lidos nas duas coincidem, e o grupo fica com o que cada uma deu. */
+    const _CAMPOS_UE=['marca','modelo','potencia_aquecimento_kw','potencia_arrefecimento_kw','cop','eer','ano_fabrico'];
+    const _ueVal=v=>(v==null||v==='')?'':String(v).trim().toUpperCase();
     ocrUE.forEach(d=>{
-      const assin=assinaturaUE(d);
-      let g=gruposUE.find(g=>g.assin===assin);
-      if(!g){g={assin,dados:d,n:0};gruposUE.push(g);}
+      let g=gruposUE.find(g=>_CAMPOS_UE.every(k=>{ const a=_ueVal(g.dados[k]), b=_ueVal(d[k]); return !a||!b||a===b; })&&
+        _ueVal(g.dados.modelo)&&_ueVal(g.dados.modelo)===_ueVal(d.modelo));
+      if(!g){g={assin:assinaturaUE(d),dados:Object.assign({},d),n:0};gruposUE.push(g);}
+      else _CAMPOS_UE.forEach(k=>{ if(!_ueVal(g.dados[k])&&_ueVal(d[k])) g.dados[k]=d[k]; });
       g.n++;
     });
 
     let _textoAC='';
     if(gruposUE.length<=1){
       // caso comum: todas as unidades exteriores são iguais (ou só há OCR de 1) — texto único
-      _textoAC=`Sistema do tipo ${tipoSis} com permuta ar-ar para aquecimento e arrefecimento, marca ${marcaStr} e modelo ${modeloStr}, constituído por ${nUE!==null?nUE:'«n»'} unidade${nUE!==1?'s':''} exterior${nUE!==1?'es':''} e ${nUI} unidade${nUI!==1?'s':''} interior${nUI!==1?'es':''} instalada${nUI!==1?'s':''} em ${divsClima.join(', ')}. Este sistema, com base na ficha técnica fornecida pelo fabricante, possui uma potência de aquecimento e arrefecimento de ${pAq} e ${pArr}, respetivamente, COP de ${copStr} e EER de ${eerStr}. O equipamento encontra-se em bom funcionamento e em bom estado de conservação. ${anoStr}`;
+      _textoAC=`Sistema do tipo ${tipoSis} com permuta ar-ar para aquecimento e arrefecimento, marca ${marcaStr} e modelo ${modeloStr}, constituído por ${nUE!==null?nUE:'«n»'} unidade${nUE!==1?'s':''} exterior${nUE!==1?'es':''} e ${nUI} unidade${nUI!==1?'s':''} interior${nUI!==1?'es':''} instalada${nUI!==1?'s':''} ${emDivisoes(climDivsAC.map(([d])=>d))}. Este sistema, com base na ficha técnica fornecida pelo fabricante, possui uma potência de aquecimento e arrefecimento de ${pAq} e ${pArr}, respetivamente, COP de ${copStr} e EER de ${eerStr}. O equipamento encontra-se em bom funcionamento e em bom estado de conservação. ${anoStr}`;
     } else {
       // várias unidades exteriores com especificações DIFERENTES — um parágrafo por grupo
-      _textoAC=`Sistema do tipo ${tipoSis} com permuta ar-ar para aquecimento e arrefecimento, composto por ${nUE} unidades exteriores de especificações diferentes (ver abaixo) e ${nUI} unidade${nUI!==1?'s':''} interior${nUI!==1?'es':''} instalada${nUI!==1?'s':''} em ${divsClima.join(', ')}.`;
+      _textoAC=`Sistema do tipo ${tipoSis} com permuta ar-ar para aquecimento e arrefecimento, composto por ${nUE} unidades exteriores de especificações diferentes (ver abaixo) e ${nUI} unidade${nUI!==1?'s':''} interior${nUI!==1?'es':''} instalada${nUI!==1?'s':''} ${emDivisoes(climDivsAC.map(([d])=>d))}.`;
       gruposUE.forEach((g,idx)=>{
         const d=g.dados;
         const pAqG=d.potencia_aquecimento_kw?_v(d.potencia_aquecimento_kw)+' kW':'«P.aq» kW';
@@ -22832,7 +23036,8 @@ function _buildTxtNucleo(){
           // «Bomba de calor ar-água (ar-ar)» — o sufixo era sempre ar-ar (FIX331)
           tipoEquip:(g.tiposCE||g.tipos).join(' + ')+(_bcAgua?'':' (ar-ar)'),
           nUnidades:String(g.nUnidades),
-          marca:g.marca||'—',modelo:g.modelo||'—',
+          marca:g.marca||'—',
+          modelo:g.modelo||[...new Set((D.unidadesExtFotos||[]).map(f=>String(((f||{}).dados||{}).modelo||'').trim()).filter(Boolean))].join(', ')||'—',
           /* O TEXTO DO SISTEMA TEM UM DONO (FIX370). Aqui saía outro texto,
              feito só da chapa exterior: na Estr. da Rocha a chapa não tinha
              as potências e ficou «P.aq» kW, «COP», com o modelo da unidade
@@ -22901,7 +23106,7 @@ function _buildTxtNucleo(){
           t+=`${('Sistema '+(idx+1)).padEnd(10)} ${f.funcao.padEnd(24)} ${String(f.potencia||'—').replace('.',',').padEnd(14)} ${String(f.eficiencia||'—').replace('.',',').padEnd(11)} ${String(f.idade||'—').padEnd(11)} ${f.fracaoServida||'—'}\n`;
         });
       });
-      t+='\nNota: fração servida = área útil das divisões atribuídas a este sistema / área útil total da casa. A lareira tem sempre prioridade sobre outros sistemas de aquecimento na mesma divisão. Idade do sistema segundo as faixas do Manual SCE (Tabela 76), a partir do ano de fabrico do equipamento (quando conhecido) ou do ano de construção do imóvel. Ficou "—" onde não há dado suficiente para calcular.\n';
+      t+='\nNota: fração servida = área útil das divisões atribuídas a este sistema / área útil total da fração. Idade do sistema segundo as faixas do Manual SCE (Tabela 76), a partir do ano de fabrico do equipamento (quando conhecido) ou do ano de construção do imóvel. Ficou "—" onde não há dado suficiente para calcular.\n';
       { const _ai=avisoIdadeDaMatriz(); if(_ai) t+='\n⚠ '+_ai+'\n'; }
     }
   }
@@ -22939,6 +23144,14 @@ function _buildTxtNucleo(){
     let compEnuGlobal=0;
     Object.entries(D.enuTipos||{}).forEach(([tipo,dados])=>{
       if(!dados) return;
+      /* levantamentos antigos: «Fracção comercial» é a loja do lado — fração
+         adjacente, sem perdas; não é espaço não útil (FIX391) */
+      if(/^fra[cç]{1,2}[ãa]o comercial$/i.test(tipo)){
+        const _a=parseFloat(String(dados.area||'').replace(',','.'))||0, _c=parseFloat(String(dados.comp||'').replace(',','.'))||0;
+        t+=`  Fração adjacente (outra loja)${_c?': '+_c.toFixed(2).replace('.',',')+'m':''}${_a?' → '+_m2(_a):''} — sem perdas, fica de fora (do outro lado há espaço útil).\n`+
+           `    Registado na pergunta antiga dos espaços não úteis; nas paredes da divisão marca «Fração adjacente (outra loja)».\n`;
+        return;
+      }
       // se o mesmo espaço foi medido por divisão, a estimativa global não entra
       if(_totaisPorDivisao[tipo]>0){
         const medido=_totaisPorDivisao[tipo];
@@ -23442,7 +23655,7 @@ function _buildTxtNucleo(){
         !_semCob&&!D.coberturaTipoEsc&&!(D.coberturaTipos||[]).length&&
         !D.coberturaTipo&&!D.coberturaInclinada;
       const _areaRepCob=c=>_repCobs.length?areaDaReparticao('cima',c,/inclinada sem desv/i.test(String(c))?1.25:1):null;
-      const cobs=_repCobs.length?_repCobs
+      let cobs=_repCobs.length?_repCobs
         :_semCob?[]
         :_moradiaSemResposta?[]
         :(D.coberturaTipos&&D.coberturaTipos.length)?D.coberturaTipos
@@ -23450,6 +23663,13 @@ function _buildTxtNucleo(){
         :(D.coberturaTipo?[D.coberturaTipo]
         :(D.coberturaInclinada==='Sim'?['Cobertura inclinada']
         :(D.coberturaInclinada==='Não'?['Cobertura horizontal']:[]))));
+      /* numa fração com outra por cima, uma cobertura respondida não entra (FIX391) */
+      const _cobContra=incoerenciasPisoFracao().find(x=>x.k==='cob');
+      if(_cobContra&&!_repCobs.length){
+        cobs=[];
+        t+=sep('COBERTURAS');
+        t+='⚠ '+_cobContra.msg+'\n';
+      }
       /* ── PAVIMENTO ──
          O que está por baixo decide tudo. Terreno → pavimento térreo. Garagem,
          arrecadação, loja ou cave → pavimento INTERIOR sobre espaço não útil,
@@ -23545,7 +23765,7 @@ function _buildTxtNucleo(){
             t+='    '+_bc.desc.replace(/\n/g,'\n    ')+'\n';
             const _par=uParCobertura(_bc.u);
             t+='    '+ln('U da base',_par?_nm(_par.asc)+' (U asc.) · '+_nm(_par.desc)+' (U desc.) W/(m².°C)':'— W/(m².°C)').trim()+'\n';
-            if(_par) t+='    → folha: Tabela 8.1, «U asc.» e «U desc.»'+(_par.descCalculado?' (U desc. pela Tabela 23)':'')+'\n';
+            if(_par&&_par.descCalculado) t+='    (U desc. pela Tabela 23)\n';
             if(_bc.aviso) t+='    ⚠ '+_bc.aviso+'\n';
             t+=_notaEstr;
             if(ehDesvao(c)) t+=_notaDesv;
@@ -23605,7 +23825,7 @@ function _buildTxtNucleo(){
             'cobertura — confirma se há alguma zona coberta por outra fração. Um desvão\n'+
             'não habitado entra como envolvente para espaço não útil (b_tr da Tabela 22).\n'
           : '⚠ SUGESTÃO. A área de cada cobertura tem de ser medida — a app não a calcula\n'+
-            'quando há mais do que uma ou quando o fogo tem vários pisos. Um desvão não\n'+
+            'quando há mais do que uma ou quando o edifício tem vários pisos. Um desvão não\n'+
             'habitado entra como envolvente para espaço não útil (b_tr da Tabela 22).\n';
       }
     }
@@ -23904,7 +24124,11 @@ function _buildTxtNucleo(){
     // Num apartamento a porta de entrada dá sempre para a circulação comum —
     // há sempre esta PTL de caixilharia, mesmo que não se meça no local.
     const _tiposCirc=_envIntKeys.filter(tp=>/circula|comum|escada|patamar|hall/i.test(tp));
-    const _temPortaEntrada=_tiposCirc.length>0;
+    /* Numa loja a entrada é, quase sempre, pela rua. A porta para a circulação
+       comum só entra quando foi marcada numa divisão (FIX391). */
+    const _portaCircMarcada=(D.divisoes||[]).some(dv=>{ const d4=(D.divisoesDados||{})[dv]||{};
+      return !!d4.portaExt&&/circula|comum|escada|patamar|hall/i.test(String(d4.portaExtContacto||'')); });
+    const _temPortaEntrada=_tiposCirc.length>0&&_portaCircMarcada;
     if(_envIntPTLKeys.length||_temPortaEntrada){
       t+=sep('PONTES TÉRMICAS LINEARES INTERIORES (Tabela 34 Manual SCE)');
       t+='Ψ por defeito Tabela 34: 0,70 nas ligações parede/pavimento; 0,30 na caixilharia.\n';
@@ -24051,8 +24275,8 @@ function _buildTxtNucleo(){
   // seguir aos textos dos vãos; a mesma tabela (por grupo VE) continua a ser
   // usada mais abaixo, junto das Tabelas 10 e 12, sem se repetir aqui.
   function calcGtotTab48(ve){
-    const vidro=(ve.tipo||'').toLowerCase().includes('duplo')?'duplo':'simples';
-    const gPerp=vidro==='duplo'?0.75:0.85;
+    const vidro=vidroDoVao(ve);
+    const gPerp=gviDoVao(ve).g;
     const prot=(protParaCalculo(ve)||'').toLowerCase();
     const cor=corDaProtecao(ve);
     // Tabela 48 do Manual SCE (pág. 77), confirmada célula a célula:
@@ -24116,42 +24340,70 @@ function _buildTxtNucleo(){
     return {gPerp,gtot,vidro,tipoP};
   }
   const {grupos:grpsPaste}=agruparVEsPorCaracteristicas();
+  /* OS VÃOS NO FCC (FIX391). Esta tabela vinha da folha ITeCons de habitação
+     (Tabela 11, linha 728+). Em comércio a folha é a EdificioN do FCC v1.04,
+     com quatro blocos: catálogo (246-251), Uw e fatores solares (256-261),
+     descrição (268-271), instâncias (275-281) e sombreamento (298-303). Os
+     textos das listas são os do separador Listas, tal e qual. */
   if(grpsPaste.length){
-    t+='\nTABELA 11 — Uwdn / Fator Solar (linha 728+)\n';
-    t+='  [Via: EDIFÍCIO EXISTENTE — vidro simples, valor directo do ITE50; vidro duplo,\n';
-    t+='   interpolação no ITE50 entre 6 e 16 mm. A fórmula ΔR do Manual SCE é a via de\n';
-    t+='   PROJECTO NOVO e não se aplica aqui. NÃO recalcular estes valores.]\n';
-    t+='  [Uw dos Quadros III.1 a III.3 do ITE50: vidro simples ou duplo incolor, UMA janela.\n';
-    t+='   Vidro de BAIXA EMISSIVIDADE e JANELA DUPLA (2 janelas em série) têm linha própria\n';
-    t+='   nesses quadros e não são cobertos pela app — corrigir Uw, Uwdn e g\u22a5vi à mão.]\n';
-    t+=`${'B: Designação'.padEnd(15)}${'C: Uwdn'.padEnd(10)}${'D: g⊥,vi'.padEnd(10)}${'E: gtot'.padEnd(9)}${'F: Gtot,p'.padEnd(11)}${'G: Classe Caixilharia'.padEnd(23)}${'H: Tipo Vidro'}\n`;
-    t+=`${'─'.repeat(95)}\n`;
+    const _noite=ocupacaoNoturnaPES();
+    const NOMES_TIPOP={persiana:'Persiana réguas metál./plást.',portada_baixa:'Portada opaca',portada_elevada:'Portada de lâminas reguláveis',cortina_ext:'Lona/cortina exterior opaca',portada_int_madeira:'Portada opaca interior (madeira)',portada_int_metal:'Portada opaca interior (metálica)',estore:'Estore de lâminas (interior)',cortina:'Cortina interior',blackout:'Cortina opaca interior'};
+    const _f2=v=>(v==null||!isFinite(v))?'—':Number(v).toFixed(2).replace('.',',');
+    const _classeFCC=ve=>ehTijoloVidro(ve)?'— (não se aplica)':ehFachadaCortina(ve)?'sem classificação':(classePermeabilidadeVao(ve)?'2':'sem classificação');
+    const _estoreFCC=ve=>{ if(semCaixilho(ve)||!ve.caixEstore) return 'Não tem';
+      return /elevada|alta/i.test(String(ve.estorePermeab||ve.caixEstorePermeab||''))?'Perm. Alta':'Perm. Baixa'; };
+    const _sombFCC=s=>/fortemente/i.test(String(s||''))?'Fortemente sombreado':/normal|standard/i.test(String(s||''))?'Sombreamento Normal/Standard':
+      (String(s||'').trim()?'Sem sombreamento':'___ (POR RESPONDER)');
+    t+='\n'+'─'.repeat(60)+'\nNA FOLHA EdificioN DO FCC — VÃOS ENVIDRAÇADOS EXTERIORES\n'+'─'.repeat(60)+'\n';
+    t+='Catálogo de soluções (linhas 247-251): C=Tipo de Janela · D=Tipo de Solução Caixilharia 1 ·\n';
+    t+='F=Tipo de Proteção · G=Classe da Caixilharia · H=Permeabilidade da Caixa de Estore.\n';
+    t+='C é o nº de janelas em série: «Simples», salvo duas janelas montadas uma atrás da outra.\n\n';
     grpsPaste.forEach((grp,idx)=>{
-      const linha=728+idx;
       const ve=grp.exemplo;
-      const veGrupo='VE'+grp.veNum;
-      const r=calcUw(ve);
-      const {gPerp,gtot,vidro,tipoP}=calcGtotTab48(ve);
-      const NOMES_TIPOP={persiana:'Persiana réguas metál./plást.',portada_baixa:'Portada opaca',portada_elevada:'Portada de lâminas reguláveis',cortina_ext:'Lona/cortina exterior opaca',portada_int_madeira:'Portada opaca interior (madeira)',portada_int_metalica:'Portada opaca interior (metálica)',blackout:'Cortina opaca (blackout)',estore:'Estore de lâminas',cortina:'Cortina ligeiramente transp.'};
-      /* Cortina transparente pelo interior: descrita no vão, mas sem valor
-         verificado na Tabela 48 — diz-se porque não conta (FIX329). */
+      t+=`  VE${grp.veNum} (linha ${247+idx})\n`;
+      t+=`    C: Simples\n    D: ${tipoSolucaoFCC(ve)}\n    F: ${tipoProtecaoFCC(ve)}\n`;
+      t+=`    G: ${_classeFCC(ve)}\n    H: ${_estoreFCC(ve)}\n`;
+    });
+    t+='\nUw e fatores solares (linhas 258-261): D=Uw da solução · E=g⊥,vi · F=gT (proteções\n';
+    t+='permanentes e móveis ativadas) · G=gTp (só permanentes). H, I e J são fórmulas.\n';
+    t+=_noite
+      ?'Alojamento (há quem durma no edifício): a coluna D leva o Uwdn quando há proteção exterior (nota r).\n'
+      :'A coluna D leva o Uw — o Uwdn só entra quando há quem durma no edifício (nota r da folha).\n';
+    t+='Edifício existente: Uw do ITE50 (vidro simples direto; duplo interpolado entre 6 e 16 mm de\n';
+    t+='caixa de ar) ou do fabricante. Vidro de baixa emissividade e janela dupla corrigem-se à mão.\n\n';
+    t+=`${'Solução'.padEnd(10)}${'D: Uw'.padEnd(10)}${'E: g⊥,vi'.padEnd(11)}${'F: gT'.padEnd(9)}${'G: gTp'.padEnd(9)}Notas\n`;
+    t+=`${'─'.repeat(95)}\n`;
+    grpsPaste.forEach(grp=>{
+      const ve=grp.exemplo, r=calcUw(ve);
+      const {gPerp,gtot,tipoP}=calcGtotTab48(ve);
       const _pi=String(ve.protInt||'');
       const _corAssumida=tipoP&&tipoP!=='persiana'&&!corDaProtecaoRespondida(ve);
-      const dispositivoStr=tipoP?NOMES_TIPOP[tipoP]+(_corAssumida?' — ⚠ cor da proteção POR RESPONDER, assumida '+corDaProtecao(ve).replace('media','média'):'')
-        :(!String(ve.prot||'').trim()?'⚠ PROTEÇÃO EXTERIOR POR RESPONDER — valor sem proteção, provisório'
-        :('Sem proteção (g⊥,vi)'+(/transparentes|^outro$/i.test(_pi)?' — '+_pi.toLowerCase()+' pelo interior não contam':'')));
-      const temUwdn=r&&r.uwdn!==null;
-      const uwdnVal=temUwdn?r.uwdn:(r?r.uw:null);
-      const uwdnStr=(uwdnVal!==null?uwdnVal.toFixed(2).replace('.',','):'—')+(temUwdn?'':'*');
-      t+=`${veGrupo.padEnd(15)}${uwdnStr.padEnd(10)}${gPerp.toFixed(2).replace('.',',').padEnd(10)}${gtot.toFixed(2).replace('.',',').padEnd(9)}${gPerp.toFixed(2).replace('.',',').padEnd(11)}${(classePermeabilidadeVao(ve)||'Sem classificação').padEnd(23)}${vidro.charAt(0).toUpperCase()+vidro.slice(1)}  (linha ${linha}) — gtot via Tabela 48: ${dispositivoStr}\n`;
+      const disp=tipoP?'gT pela Tabela 48: '+(NOMES_TIPOP[tipoP]||tipoP)+(_corAssumida?' — ⚠ cor da proteção POR RESPONDER, assumida '+corDaProtecao(ve).replace('media','média'):'')
+        :(!String(ve.prot||'').trim()?'⚠ proteção exterior POR RESPONDER — gT provisório'
+        :('sem proteção: gT = g⊥,vi'+(/transparentes|^outro$/i.test(_pi)?' ('+_pi.toLowerCase()+' pelo interior não contam)':'')));
+      const uwD=(_noite&&r&&r.uwdn!=null)?r.uwdn:(r?r.uw:null);
+      const _g=gviDoVao(ve);
+      const notas=[disp];
+      if(_g.origem==='fabricante') notas.push('g⊥,vi do fabricante');
+      if(ehFachadaCortina(ve)) notas.push(r&&r.origem==='fabricante'?'U da declaração de desempenho':r&&r.origem==='ITE50 (vão fixo)'?'U ITE50 vão fixo metálico — confirmar com o sistema':'U de fachada cortina, vidro simples 10 mm');
+      t+=`${('VE'+grp.veNum).padEnd(10)}${_f2(uwD).padEnd(10)}${_f2(gPerp).padEnd(11)}${_f2(gtot).padEnd(9)}${_f2(gPerp).padEnd(9)}${notas.join(' · ')}\n`;
     });
-    if(grpsPaste.some(g=>{ const r2=calcUw(g.exemplo); return !(r2&&r2.uwdn!==null); }))
-      t+='* = valor de Uw (vão sem proteção exterior — não tem Uwdn)\n';
+    t+='\nDescrição (linhas 270-271): D=Descrição da Solução · H=Descrição da Proteção —\n';
+    t+='os dois parágrafos de cada VE em «VÃOS ENVIDRAÇADOS — TEXTOS PARA CE», acima.\n';
+    t+='\nInstâncias (linhas 277-281): C=Designação · D=Compartimento · E=Orientação · F=Área [m²].\n';
+    t+='Sombreamento (linhas 300-303), com a regra de simplificação (linha 265) = Sim:\n';
+    t+='E=condições na estação de aquecimento · F=na estação de arrefecimento.\n\n';
+    t+=`${'C'.padEnd(7)}${'D'.padEnd(16)}${'E'.padEnd(11)}${'F'.padEnd(9)}${'E (aquecimento)'.padEnd(31)}F (arrefecimento)\n`;
+    t+=`${'─'.repeat(100)}\n`;
+    vaosAgrupados.forEach(({div,ve,veGrupo})=>{
+      t+=`${veGrupo.padEnd(7)}${String(div).slice(0,15).padEnd(16)}${String(ve.orient||'—').padEnd(11)}${_f2(+areaVao(ve).toFixed(2)).padEnd(9)}`+
+         `${_sombFCC(ve.sombAquec).padEnd(31)}${_sombFCC(ve.sombArref)}\n`;
+    });
   }
 
   // ── VÃOS — LISTA J1/J2/J3 (VE agrupado por características) ──
-  t+=sep('VÃOS ENVIDRAÇADOS — LISTA FINAL ITeCons');
-  t+=`${'J'.padEnd(4)} ${'VE'.padEnd(5)} ${'Divisão'.padEnd(14)} ${'Área'.padEnd(8)} ${'Orient.'.padEnd(8)} Uw/Uwdn (conforme proteção)\n`;
+  t+=sep('VÃOS ENVIDRAÇADOS — LISTA DOS VÃOS');
+  t+=`${'J'.padEnd(4)} ${'VE'.padEnd(5)} ${'Divisão'.padEnd(14)} ${'Área'.padEnd(8)} ${'Orient.'.padEnd(8)} ${ocupacaoNoturnaPES()?'Uw/Uwdn (conforme proteção)':'Uw (coluna D do FCC)'}\n`;
   t+=`${'─'.repeat(60)}\n`;
   let totVaosArea=0;
   vaosAgrupados.forEach(({div,ve,veGrupo,j})=>{
@@ -24160,7 +24412,7 @@ function _buildTxtNucleo(){
     const area=+areaVao(ve).toFixed(2);
     totVaosArea+=area;
     // com proteção exterior → só Uwdn; sem proteção → só Uw
-    const valStr=(r&&r.uwdn!==null)?_nm(r.uwdn)+' (Uwdn)':(r&&r.uw!==null?_nm(r.uw)+' (Uw)':' — ');
+    const valStr=(ocupacaoNoturnaPES()&&r&&r.uwdn!==null)?_nm(r.uwdn)+' (Uwdn)':(r&&r.uw!==null?_nm(r.uw)+' (Uw)':' — ');
     t+=`J${String(j).padEnd(4)} ${veGrupo.padEnd(5)} ${div.padEnd(14)} ${(_m2(area)||'—').padEnd(10)} ${(ve.orient||'—').padEnd(8)} ${valStr} W/m².ºC\n`;
   });
   /* Número em português e espaço antes da unidade: saía «Total: 0.00m²». E se
@@ -24491,9 +24743,16 @@ function _buildTxtNucleo(){
          comportamento antigo ser deixar passar. Só um R/C, uma cave ou uma
          moradia podem tocar o terreno; num andar acima disso é impossível. */
       const _pbT=String(D.pavPorBaixo||'').toLowerCase();
-      const _terreoOk=_pbT
+      /* numa fração, a localização do piso manda sobre uma resposta que a
+         contradiz (FIX391) */
+      const _plT=(D.edificioTipo==='Apartamento')?String(D.pisoLocal||'').trim():'';
+      const _terreoOk=(['1','2','2*','3'].includes(_plT))?false
+        :_pbT
         ? /terreno|solo/.test(_pbT)
         : podeTocarOSolo();
+      { const _pc=incoerenciasPisoFracao().find(x=>x.k==='pav');
+        if(_pc){ t+=sep('PAVIMENTO — RESPOSTAS QUE NÃO BATEM'); t+='⚠ '+_pc.msg+'\n'+
+          'As pontes térmicas seguem a localização do piso; o pavimento fica por caracterizar até se confirmar.\n'; } }
       /* Sem áreas medidas a secção desaparecia, e com ela o pavimento
          respondido (Infante, FIX331). Sai sempre, com a área por medir. */
       if(_terreoOk){
@@ -24950,7 +25209,7 @@ function _buildTxtNucleo(){
   // grpsPaste já foi calculado mais acima (para a Tabela 11); só falta vaosPaste,
   // usado na Tabela 12.
   const {todos:vaosPaste}=agruparVEsPorCaracteristicas();
-  if(grpsPaste.length){
+  if(grpsPaste.length&&false){   // tabelas da folha ITeCons de habitação: não servem ao FCC (FIX391)
     t+=sep('TABELAS ITeCons REH — FORMATO DA FOLHA "Introducao de Dados"');
     t+='Linhas reais da folha indicadas entre parêntesis. Colunas na mesma ordem da folha ITeCons.\n';
 
@@ -25031,7 +25290,7 @@ function _buildTxtNucleo(){
     });
   });
   if(_fotosEquip.length){
-    t+=sep('ÍNDICE DE FOTOS DE EQUIPAMENTO (para anexar no ITeCons)');
+    t+=sep('ÍNDICE DE FOTOS DE EQUIPAMENTO (para anexar ao processo)');
     t+=`${'Equipamento'.padEnd(26)} ${'Local'.padEnd(14)} ${'Marca / Modelo'.padEnd(26)} Ficheiro\n`;
     t+=`${'─'.repeat(110)}\n`;
     _fotosEquip.forEach(fe=>{
@@ -25195,7 +25454,8 @@ function _buildTxtNucleo(){
       t+=`${nome}\n`;
       t+='  Área útil: '+(a>0?a.toFixed(2).replace('.',',')+' m²':'⚠ EM FALTA')+'\n';
       t+='  Pé-direito médio: '+(p>0?p.toFixed(2).replace('.',',')+' m':'⚠ EM FALTA')+'\n';
-      t+='  Nº de ocupantes: '+(oc>0?oc:'⚠ EM FALTA')+'\n';
+      const _ocTxt=String(e.ocupantes==null?'':e.ocupantes).trim();
+      t+='  Nº de ocupantes: '+(oc>0?oc+((e.auto||{}).ocupantes?' (densidade de referência do perfil — confirmar)':''):(_ocTxt==='0'?'0':'⚠ EM FALTA'))+'\n';
       /* A app já traz "Sedentária" por defeito. Sair EM FALTA num campo que
          tem valor por defeito só confunde quem lê o TXT. */
       t+='  Tipo de atividade metabólica: '+(e.atividade||'Sedentária (por defeito)')+'\n';
@@ -25206,6 +25466,8 @@ function _buildTxtNucleo(){
     });
     t+='TOTAL área útil de pavimento: '+(somaA>0?somaA.toFixed(2).replace('.',',')+' m²':'⚠ EM FALTA')+'\n';
     t+='TOTAL ocupação máxima: '+(somaOc>0?somaOc:'⚠ EM FALTA')+'\n';
+    if(divsC.some(n=>{ const e3=espD[n]||{}; return String(e3.util||'Útil')==='Útil'&&!(_num(e3.ocupantes)>0)&&String(e3.ocupantes||'').trim()!=='0'; }))
+      t+='⚠ Há espaços sem nº de ocupantes.\n';
     if(somaA>0&&somaOc>0) t+='Densidade de ocupação: '+(somaA/somaOc).toFixed(2).replace('.',',')+' m²/ocupante\n';
     if(somaA>=1000) t+='⚠ Área total ≥ 1000 m² — fora do âmbito do PES (500 m² em centros comerciais, hiper e supermercados). Confirmar enquadramento.\n';
     const nUteis=divsC.filter(n=>String((espD[n]||{}).util||'Útil')==='Útil').length;
@@ -25303,14 +25565,14 @@ function _buildTxtNucleo(){
           if(!v||!UW_ASSUMIDO[v.tipo]) return;
           let r={}; try{ r=calcUw(v)||{}; }catch(err){}
           linhas.push('  · '+nome+' — '+(v.id||'')+' ('+v.tipo+
-            (v.vidroPano?', vidro '+v.vidroPano.toLowerCase():'')+'): Uw = '+
+            (v.vidroPano?', vidro '+v.vidroPano.toLowerCase():', vidro POR RESPONDER')+'): Uw = '+
             (r.uw!=null?fmtUw(r.uw):'—')+' W/m²·°C ['+(r.origem||'—')+']');
-          if(r.origem==='ITE50 (caixilho fixo)')
-            linhas.push('      Quadro III do ITE50, caixilharia de '+
-              String(v.caixMat||'alumínio').toLowerCase()+
-              (v.corteTerm?' com':' sem')+' corte térmico, caixilho fixo, vidro '+
-              String(v.vidroPano||'duplo').toLowerCase()+
-              ' — confirmar contra a declaração de desempenho do sistema');
+          if(r.origem==='fachada cortina, vidro simples 10 mm')
+            linhas.push('      Vidro simples incolor de 10 mm, fator solar 0,85, U = 5,7 W/(m².°C) — havendo declaração de desempenho do sistema, usa a dela');
+          else if(r.origem==='ITE50 (vão fixo)')
+            linhas.push('      Quadro III.2 do ITE50, vão fixo metálico sem corte térmico, vidro '+vidroDoVao(v)+
+              (v.vidroPano?'':' (vidro do pano POR RESPONDER)')+
+              ' — a fachada cortina não tem caixilharia a declarar; havendo declaração de desempenho do sistema, usa o Uw dela');
           else if(r.origem==='valor assumido')
             linhas.push('      '+UW_ASSUMIDO[v.tipo].fonte);
         });
@@ -25359,20 +25621,31 @@ function _buildTxtNucleo(){
           '. Sem potência de controlo levantada em nenhuma luminária destes espaços.');
 
       // vãos: vidro simples, caixilharia sem corte térmico, sem proteção solar
-      let vSimples=0,vSemCorte=0,vSemProt=0;
+      /* FIX391: a fachada cortina conta à parte (é o vidro do pano que se troca,
+         não há caixilharia); «sem qualquer proteção» só quando não há exterior,
+         nem interior, nem sombreamento forte. */
+      let vSimples=0,vFCSimples=0,vSemCorte=0,vSemNada=0,vSoInt=0;
       divsC.forEach(nome=>{
         (((D.divisoesDados||{})[nome]||{}).vaos||[]).forEach(v=>{
-          if(!v) return;
-          if(/simples/i.test(v.tipo||'')||/simples/i.test(v.vidroPano||'')) vSimples++;
-          if(/alum|met/i.test(v.caixMat||'')&&!v.corteTerm) vSemCorte++;
-          if(/sem prote/i.test(v.prot||'')) vSemProt++;
+          if(!v||!(areaVao(v)>0)) return;
+          if(ehFachadaCortina(v)){ if(vidroDoVao(v)==='simples'&&v.vidroPano) vFCSimples++; }
+          else if(!ehTijoloVidro(v)&&vidroDoVao(v)==='simples') vSimples++;
+          if(!semCaixilho(v)&&/alum|met/i.test(v.caixMat||'')&&!v.corteTerm) vSemCorte++;
+          if(/sem prote/i.test(v.prot||'')){
+            const _int=String(v.protInt||'').trim()&&!/^(nenhum|n[ãa]o|sem)/i.test(String(v.protInt||''));
+            const _forte=/fortemente/i.test(String(v.sombArref||''));
+            if(_int) vSoInt++; else if(!_forte) vSemNada++;
+          }
         });
       });
       if(vSimples) cand.push('Substituição dos vãos de vidro simples por vidro duplo — '+vSimples+' vão(s).');
+      if(vFCSimples) cand.push('Substituição do vidro simples da fachada cortina por vidro duplo (ou de baixa emissividade) — '+vFCSimples+' vão(s).');
       if(vSemCorte) cand.push('Caixilharia metálica sem corte térmico em '+vSemCorte+
         ' vão(s). Avaliar substituição ou aplicação de película de baixa emissividade.');
-      if(vSemProt) cand.push('Proteção solar em '+vSemProt+' vão(s) sem qualquer sombreamento. '+
+      if(vSemNada) cand.push('Proteção solar em '+vSemNada+' vão(s) sem proteção exterior nem interior. '+
         'Pesa sobretudo no arrefecimento, e mais ainda nos vãos a sul e a poente.');
+      if(vSoInt) cand.push('Proteção solar exterior em '+vSoInt+' vão(s) que só têm proteção interior — '+
+        'a exterior corta os ganhos antes de entrarem pelo vidro.');
 
       // envolvente opaca
       if(!isSimTxt(D.temIsolamento))
@@ -25389,8 +25662,9 @@ function _buildTxtNucleo(){
       });
       if(/termoacumulador/i.test(D.aqsTipo||''))
         cand.push('Substituição do termoacumulador elétrico por bomba de calor para AQS.');
-      if(!/sim/i.test(String(D.solar||'')))
-        cand.push('Solar térmico para AQS — sem sistema instalado. Avaliar consoante o consumo real de água quente.');
+      /* sem AQS não há necessidades de água quente a cobrir (FIX391) */
+      if(!/sim/i.test(String(D.solar||''))&&String(D.aqsTipo||'').trim()&&!/sem sistema/i.test(D.aqsTipo||''))
+        cand.push('Solar térmico para AQS. Avaliar consoante o consumo real de água quente.');
       if(!/sim/i.test(String(D.fotovoltaico||'')))
         cand.push('Fotovoltaico para autoconsumo. Num horário de funcionamento diurno, que é o dos serviços, o perfil de consumo coincide com o de produção.');
 
@@ -26657,12 +26931,20 @@ const DIV_MASC=/^(quarto|wc|escritorio|hall|corredor|vestibulo|sotao|atrio|arrum
 const DIV_MASC_COM=/^(wc|armazem|arquivo|arrumo|balcao|bar|escritorio|gabinete|hall|corredor|open space|refeitorio|vestiario|balneario|salao|consultorio|ginasio|estacionamento|atendimento)/;
 function generoDivisao(n){
   const x=_nomeSemAcento(n).toLowerCase();
+  /* «Divisão» acaba em «o» mas é feminino: saía «no Divisão 1» (FIX391) */
+  if(/^(divisao|loja|montra|rece[cp]ao|secretaria|portaria|escada|oficina|cafetaria|area de venda|zona de publico|sala de)\b/.test(x)) return 'f';
   if(DIV_MASC.test(x)||DIV_MASC_COM.test(x)) return 'm';
   if(/^(sala|cozinha|circulacao|despensa|marquise|casa de banho|suite|lavandaria|kitchenette|instalacao|garagem|varanda|arrecadacao|zona|entrada|copa|biblioteca|adega|cave|sotea|area|kitchnet)\b/i.test(x)) return 'f';
   const p=x.split(/\s+/)[0]||'';
   return /o$|os$/.test(p)?'m':'f';
 }
 // «da Sala», «do Quarto 1»; em:true → «na Sala», «no Quarto 1»; art:true → «a Sala», «o Quarto 1»
+/* «na Divisão 1, na Loja e no WC» (FIX391): em comércio os espaços têm nome
+   próprio e não se escrevem em minúsculas («em divisão 1»). */
+function emDivisoes(lista){
+  const l=(lista||[]).filter(Boolean).map(d=>comArtigo(d,'em'));
+  return l.length>1?l.slice(0,-1).join(', ')+' e '+l[l.length-1]:(l[0]||'');
+}
 function comArtigo(n,modo){
   const m=generoDivisao(n)==='m';
   const pre=modo==='em'?(m?'no':'na'):modo==='art'?(m?'o':'a'):(m?'do':'da');
@@ -26699,6 +26981,7 @@ const CEL_AREA_UTIL='C176', CEL_DESCRICAO='B140';
    (ou a área útil × fator, na cobertura inclinada agravada). Noutro caso,
    nada: uma área de piso ou repartida não se liga ao total. */
 function refAreaUtilFolha(area,fator){
+  return '';   // C176 é da folha ITeCons de habitação; o FCC não tem esta célula (FIX391)
   const au=areaUtilTotal(), f=fator||1, a=num(area);
   if(!(au>0)||!(a>0)||Math.abs(a-au*f)>0.005) return '';
   return '   → na folha: ='+CEL_AREA_UTIL+(f!==1?'*'+String(f).replace('.',','):'');
@@ -26940,7 +27223,7 @@ function _gerarDescricaoSucintaNucleo(){
     if(v.includes('híbrida')||v.includes('hibrida')) return 'A ventilação é híbrida, combinando admissão natural com extração mecânica.';
     return 'A ventilação é do tipo '+String(D.ventTipo).toLowerCase()+'.';
   })();
-  const enqFrase='enquadrado na tipologia '+tipStr+' do Portal SCE'+
+  const enqFrase=(D.edificioTipo==='Moradia'?'enquadrado':'enquadrada')+' na tipologia '+tipStr+' do Portal SCE'+
     (perfStr?' (perfil '+perfStr+', DL 79/2006)':'');
   const apavTotal=calcApavTotal();
   /* Segundo marcador a chegar ao texto do certificado, depois do da taxa de
@@ -27062,13 +27345,13 @@ function _gerarDescricaoSucintaNucleo(){
     if(climDivsACDx.length){
       const climDivsACD2=climDivsACDx;
       const tiposACD=[...new Set(climDivsACD2.flatMap(([,cd])=>(cd.tipos||[cd.tipo]).filter(t=>t&&!_foraAC(t))))];
-      const divsACD=climDivsACD2.map(([d])=>d.toLowerCase());
+      const divsACD=climDivsACD2.map(([d])=>d);
       /* «existem ainda» só depois de outra frase de aquecimento; um sistema só
          no singular; a lista acaba em «e» (FIX321). */
-      const _lst=divsACD.length>1?divsACD.slice(0,-1).join(', ')+' e '+divsACD[divsACD.length-1]:divsACD[0];
-      const _um=divsACD.length===1;
+      const _lst=emDivisoes(divsACD);
+      const _um=climDivsACD2.length===1&&tiposACD.length===1;
       // «existem ainda um sistema» — o plural não acompanhava o número (FIX331)
-      frases.push(`${'existe'+(_um?'':'m')+(frases.length?' ainda':'')} ${_um?'um sistema':'sistemas'} ${tiposACD.join('/').toLowerCase()} de ar condicionado (aquecimento e arrefecimento) em ${_lst}`);
+      frases.push(`${'existe'+(_um?'':'m')+(frases.length?' ainda':'')} ${_um?'um sistema':'sistemas'} ${tiposACD.join('/').toLowerCase()} de ar condicionado (aquecimento e arrefecimento) ${_lst}`);
     }
     // juntar as frases com maiúscula só na primeira, ponto final no fim
     // a lareira aberta diz-se que existe, e que não conta (FIX336)
@@ -27392,24 +27675,36 @@ function buildFolhaComercioXlsx(){
 
   const vao=[['ID Vão','Espaço (D)','Orientação (E)','Largura [m]','Altura [m]','Área [m²] (F)',
     'Tipo de vidro','Tipo de Janela FCC','Caixilharia','Corte térmico','Abertura','Proteção solar',
-    'Uw [W/m²·°C]','Uwdn [W/m²·°C]','Origem do Uw','Uw do fabricante','g⊥,vi do fabricante']];
+    'Uw [W/m²·°C]','Uwdn [W/m²·°C]','Origem do Uw','Uw do fabricante','g⊥,vi','Origem do g⊥,vi',
+    'Tipo de Solução Caixilharia 1 (FCC)','Tipo de Proteção (FCC)']];
   divs.forEach(n=>{
     ((D.divisoesDados[n]||{}).vaos||[]).forEach(v=>{
       const L=_num(v.larg),A=_num(v.alt);
       if(!(L&&A)&&!v.tipo) return;
       let uw='',uwdn='',org='';
       try{ const r=calcUw(v); uw=r.uw!=null?r.uw:''; uwdn=r.uwdn!=null?r.uwdn:''; org=r.origem||''; }catch(err){}
+      const _sc=semCaixilho(v), _g=gviDoVao(v);
       vao.push([v.id||'',n,v.orient||'',L||'',A||'',(L&&A)?Math.round(L*A*100)/100:'',
-        v.tipo||'',v.tipoJanelaFCC||'',v.caixMat||'',v.corteTerm?'Sim':'Não',v.abertura||'',
-        v.prot||'',uw,uwdn,org,_num(v.uwManual)||'',_num(v.gviManual)||_num(v.gviCalc)||'']);
+        ehFachadaCortina(v)?(v.vidroPano||'POR RESPONDER'):(v.tipo||''),tipoSolucaoFCC(v),
+        _sc?'—':(v.caixMat||''),ehFachadaCortina(v)?'Não':(_sc?'—':(v.corteTerm?'Sim':'Não')),ehFachadaCortina(v)?(v.abertura||''):(_sc?'—':(v.abertura||'')),
+        v.prot||'',uw,uwdn,org,_num(v.uwManual)||'',_g.g,_g.origem,tipoSolucaoFCC(v),tipoProtecaoFCC(v)]);
     });
   });
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(vao),'FCC_Vaos');
 
   const clm=[['Espaço','Tipos de sistema','Marca','Modelo','Potência [kW]','Eficiência','Nº unidades','Notas']];
+  /* marca e modelo: os da etiqueta interior, e na falta deles os das chapas
+     exteriores (FIX391) */
+  const _ueF=(D.unidadesExtFotos||[]).map(f=>(f||{}).dados||{});
+  const _modUE=[...new Set(_ueF.map(d=>String(d.modelo||'').trim()).filter(Boolean))];
   Object.entries(D.climaDivisoes||{}).forEach(([n,cd])=>{
-    clm.push([n,(cd.tipos||[cd.tipo]).filter(Boolean).join(' + '),cd.marca||'',cd.modelo||'',
-      cd.pot||'',cd.efic||cd.cop||'',cd.nUnidades||cd.nUE||'',cd.notas||'']);
+    const tipos=(cd.tipos||[cd.tipo]).filter(Boolean); if(!tipos.length) return;
+    const ocr=cd.dadosOCR||{};
+    const marca=cd.marca||(cd.marcas||[]).filter(Boolean).join(', ')||ocr.marca||'';
+    const modelo=cd.modelo||ocr.modelo||_modUE.join(', ');
+    const pot=cd.pot||[ocr.potencia_aquecimento_kw,ocr.potencia_arrefecimento_kw].filter(Boolean).join(' / ');
+    const ef=cd.efic||cd.cop||[ocr.cop||ocr.scop,ocr.eer||ocr.seer].filter(Boolean).join(' / ');
+    clm.push([n,tipos.join(' + '),marca,modelo,pot,ef,cd.nUnidades||cd.nUE||'',cd.notas||'']);
   });
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(clm),'Climatizacao');
 
@@ -35162,9 +35457,11 @@ function faltaNoVao(v){
   if(!v.orient) f.push('orientação');
   if(!v.tipo) f.push('vidro');
   // sem valores por defeito (FIX314): o que não se escolheu tem de se ver
-  if(!v.caixMat&&!ehTijoloVidro(v)) f.push('caixilharia');
-  if(!v.abertura&&!ehTijoloVidro(v)) f.push('abertura');
-  if(!v.caixCor&&!ehTijoloVidro(v)) f.push('cor');
+  if(!v.caixMat&&!semCaixilho(v)) f.push('caixilharia');
+  if(!v.abertura&&!semCaixilho(v)) f.push('abertura');
+  if(!v.caixCor&&!semCaixilho(v)) f.push('cor');
+  if(ehFachadaCortina(v)&&!v.vidroPano) f.push('vidro do pano');
+  if(ehFachadaCortina(v)&&!v.abertura) f.push('abertura (fixa ou basculante)');
   if(!v.prot) f.push('proteção');
   if(!v.sombAquec) f.push('sombreamento');
   // o de verão também é obrigatório — o verificador pede-o (FIX347)
